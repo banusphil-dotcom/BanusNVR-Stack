@@ -20,43 +20,15 @@ torch.onnx.export(m, x, '/models/mobilenetv2_features.onnx', opset_version=12, \
     input_names=['input'], output_names=['features'])" \
     && mkdir -p /models
 
-# --- Stage 1b: Export MobileNetV2 features INT8 TFLite for Coral Edge TPU ---
-FROM python:3.11-slim AS coral-model-export
-RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir tensorflow numpy
-
-# Install Edge TPU compiler
-RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
-    gpg --dearmor -o /usr/share/keyrings/coral-edgetpu.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/coral-edgetpu.gpg] https://packages.cloud.google.com/apt coral-edgetpu-stable main" \
-    > /etc/apt/sources.list.d/coral-edgetpu.list && \
-    apt-get update && apt-get install -y --no-install-recommends edgetpu-compiler && \
-    rm -rf /var/lib/apt/lists/*
-
-# Export MobileNetV2 feature extractor (1280-dim, no classifier head) → INT8 TFLite
-RUN mkdir -p /models && python3 -c "\
-import tensorflow as tf; \
-import numpy as np; \
-model = tf.keras.applications.MobileNetV2(input_shape=(224, 224, 3), include_top=False, pooling='avg', weights='imagenet'); \
-print(f'MobileNetV2 feature extractor: input {model.input_shape} → output {model.output_shape}'); \
-def representative_data_gen(): \
-    for _ in range(200): \
-        yield [np.random.uniform(0.0, 1.0, (1, 224, 224, 3)).astype(np.float32)]; \
-converter = tf.lite.TFLiteConverter.from_keras_model(model); \
-converter.optimizations = [tf.lite.Optimize.DEFAULT]; \
-converter.representative_dataset = representative_data_gen; \
-converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]; \
-converter.inference_input_type = tf.uint8; \
-converter.inference_output_type = tf.uint8; \
-tflite_model = converter.convert(); \
-with open('/models/mobilenetv2_features_int8.tflite', 'wb') as f: \
-    f.write(tflite_model); \
-print(f'INT8 TFLite model: {len(tflite_model)} bytes ({len(tflite_model)/1024/1024:.1f} MB)')"
-
-# Compile for Edge TPU (rewrites graph to use TPU custom ops)
-RUN edgetpu_compiler -s -o /models/ /models/mobilenetv2_features_int8.tflite && \
-    ls -la /models/ && \
-    echo "Edge TPU compilation complete"
+# --- Stage 1b: (Coral Edge TPU pre-compilation has been removed) -------------
+# The previous stage tried to pre-compile a MobileNetV2 INT8 TFLite for the
+# Edge TPU at image build time. It pulled in TensorFlow (~600 MB), depended on
+# an externally-hosted libedgetpu release tarball that is no longer reachable,
+# and used invalid one-line Python that no longer parses on modern interpreters.
+#
+# Coral support is OFF by default (CORAL_ENABLED=false). For users who want it,
+# the model can be built/downloaded at runtime or supplied via the /models
+# bind-mount. See docs/CONFIGURATION.md.
 
 # --- Stage 2: Runtime image ---
 FROM python:3.11-slim
@@ -83,12 +55,9 @@ RUN curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key | \
     intel-opencl-icd \
     && rm -rf /var/lib/apt/lists/*
 
-# Coral Edge TPU runtime (feranick's libedgetpu — works on all platforms)
-RUN curl -fsSL https://github.com/feranick/libedgetpu/releases/download/16.0TF2.17.1-v2/edgetpu_runtime_20250122_amd64.tar.gz | \
-    tar -xz -C /tmp && \
-    dpkg -i /tmp/edgetpu_runtime/libedgetpu1-std_16.0tf2.17.1-1_amd64.deb || true && \
-    apt-get -f install -y && \
-    rm -rf /tmp/edgetpu_runtime
+# Coral Edge TPU runtime install was removed (upstream URL returned 404).
+# Install libedgetpu1-std at runtime on the host instead, or rebuild this image
+# with a working URL when re-enabling Coral support.
 
 WORKDIR /app
 
@@ -100,8 +69,7 @@ RUN pip install --no-cache-dir -r requirements.txt ai-edge-litert
 RUN mkdir -p /models-builtin /models
 COPY --from=model-export /models/mobilenetv2_features.onnx /models-builtin/mobilenetv2_features.onnx
 
-# Copy Coral Edge TPU model (MobileNetV2 features INT8, compiled for Edge TPU)
-COPY --from=coral-model-export /models/mobilenetv2_features_int8_edgetpu.tflite /models-builtin/mobilenetv2_features_edgetpu.tflite
+# (Coral Edge TPU model copy removed — see Stage 1b note above.)
 
 # Download InsightFace model pack (buffalo_s: SCRFD + ArcFace MobileFaceNet)
 # Root = /models-builtin/insightface → models end up at /models-builtin/insightface/models/buffalo_s/
