@@ -1,0 +1,24 @@
+# =============================================================================
+# Development overlay — build images locally instead of pulling from registry.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+# =============================================================================
+services:
+  api:
+    image: banusnvr-api:dev
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+
+  web:
+    image: banusnvr-web:dev
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+
+  setup-wizard:
+    image: banusnvr-setup-wizard:dev
+    build:
+      context: ./apps/setup-wizard
+      dockerfile: Dockerfile

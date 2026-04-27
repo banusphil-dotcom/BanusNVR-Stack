@@ -1,0 +1,277 @@
+# =============================================================================
+# BanusNVR — Production docker-compose
+# =============================================================================
+# Pulls pre-built images from a container registry. Anyone can deploy with:
+#
+#     git clone https://github.com/<owner>/BanusNVR-Stack
+#     cd BanusNVR-Stack
+#     cp .env.example .env       # edit, OR use the web setup wizard
+#     docker compose pull
+#     docker compose up -d
+#
+# To build the images locally instead, use:
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+# =============================================================================
+
+x-common-env: &common-env
+  TZ: ${TZ:-Europe/London}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Setup wizard (web UI for first-run config). Only starts in "setup" profile.
+  # Browse to http://<host>:${SETUP_WIZARD_PORT:-8090} on first install.
+  # ---------------------------------------------------------------------------
+  setup-wizard:
+    image: ${BANUSNVR_REGISTRY:-ghcr.io/banusphil-dotcom}/banusnvr-setup-wizard:${BANUSNVR_TAG:-latest}
+    container_name: banusnvr-setup
+    restart: "no"
+    profiles: ["setup"]
+    environment:
+      <<: *common-env
+      ENV_FILE_PATH: /workspace/.env
+      ENV_EXAMPLE_PATH: /workspace/.env.example
+      COMPOSE_PROJECT_DIR: /workspace
+    ports:
+      - "${SETUP_WIZARD_PORT:-8090}:8090"
+    volumes:
+      - .:/workspace
+    networks:
+      - banusnvr_net
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — application database
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: banusnvr-db
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - banusnvr_net
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=512MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=30
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MQTT broker — Frigate ↔ API ↔ ring-mqtt communication bus
+  # ---------------------------------------------------------------------------
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: banusnvr-mqtt
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+    volumes:
+      - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt_data:/mosquitto/data
+    networks:
+      - banusnvr_net
+
+  # ---------------------------------------------------------------------------
+  # Frigate — detection, tracking, recording, embedded go2rtc
+  # ---------------------------------------------------------------------------
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:stable
+    container_name: banusnvr-frigate
+    restart: unless-stopped
+    privileged: true
+    shm_size: "256mb"
+    depends_on:
+      - mqtt
+    environment:
+      <<: *common-env
+      FRIGATE_MQTT_HOST: mqtt
+      FRIGATE_MQTT_PORT: 1883
+    volumes:
+      - ./config/frigate:/config
+      - ${RECORDINGS_PATH:-./data/recordings}:/media/frigate/recordings
+      - frigate_storage:/media/frigate
+    devices:
+      - /dev/dri:/dev/dri
+    ports:
+      - "${FRIGATE_PORT:-5000}:5000"
+      - "${GO2RTC_API_PORT:-1984}:1984"
+      - "${GO2RTC_RTSP_PORT:-8554}:8554"
+      - "${GO2RTC_WEBRTC_PORT:-8555}:8555/tcp"
+      - "${GO2RTC_WEBRTC_PORT:-8555}:8555/udp"
+    networks:
+      - banusnvr_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Ollama — local LLM for AI narrative generation
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: banusnvr-ollama
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - banusnvr_net
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ---------------------------------------------------------------------------
+  # Ring camera bridge (optional — only useful if you own Ring cameras)
+  # Disable by setting profile to "" or omitting from up command.
+  # ---------------------------------------------------------------------------
+  ring-mqtt:
+    image: tsightler/ring-mqtt:latest
+    container_name: banusnvr-ring-mqtt
+    restart: unless-stopped
+    profiles: ["ring", "default"]
+    depends_on:
+      - mqtt
+    environment:
+      <<: *common-env
+      MQTTHOST: mqtt
+      MQTTPORT: 1883
+      ENABLECAMERAS: "true"
+      SNAPSHOTMODE: "true"
+      LIVESTREAMUSER: ${RING_RTSP_USER:-ring}
+      LIVESTREAMPASSWORD: ${RING_RTSP_PASSWORD:-ringpass}
+    volumes:
+      - ring_data:/data
+    networks:
+      - banusnvr_net
+
+  # ---------------------------------------------------------------------------
+  # BanusNVR backend API (FastAPI + recognition pipeline)
+  # ---------------------------------------------------------------------------
+  api:
+    image: ${BANUSNVR_REGISTRY:-ghcr.io/banusphil-dotcom}/banusnvr-api:${BANUSNVR_TAG:-latest}
+    container_name: banusnvr-api
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+      frigate:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    environment:
+      <<: *common-env
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      FRIGATE_URL: http://frigate:5000
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_CLAIM_EMAIL: ${VAPID_CLAIM_EMAIL:-mailto:admin@example.com}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS: ${SMTP_TLS:-true}
+      RECORDINGS_PATH: /recordings
+      SNAPSHOTS_PATH: /recordings/snapshots
+      RETENTION_EVENTS_DAYS: ${RETENTION_EVENTS_DAYS:-30}
+      RETENTION_CONTINUOUS_DAYS: ${RETENTION_CONTINUOUS_DAYS:-0}
+      RETENTION_SNAPSHOTS_DAYS: ${RETENTION_SNAPSHOTS_DAYS:-30}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:0.5b}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-}
+      DEEP_ML_URL: ${DEEP_ML_URL:-}
+      MQTT_HOST: mqtt
+      MQTT_PORT: 1883
+      RING_RTSP_USER: ${RING_RTSP_USER:-ring}
+      RING_RTSP_PASSWORD: ${RING_RTSP_PASSWORD:-ringpass}
+      HOT_STORAGE_PATH: /livenvr
+      CORAL_ENABLED: ${CORAL_ENABLED:-false}
+    volumes:
+      - ${RECORDINGS_PATH:-./data/recordings}:/recordings
+      - ${SNAPSHOTS_PATH:-./data/snapshots}:/recordings/snapshots
+      - ${MODELS_PATH:-./data/models}:/models
+      - ${HOT_STORAGE_PATH:-./data/livenvr}:/livenvr
+      - ./config:/config
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    networks:
+      - banusnvr_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Frontend + reverse proxy (nginx serves PWA + proxies API/go2rtc/frigate)
+  # ---------------------------------------------------------------------------
+  web:
+    image: ${BANUSNVR_REGISTRY:-ghcr.io/banusphil-dotcom}/banusnvr-web:${BANUSNVR_TAG:-latest}
+    container_name: banusnvr-web
+    restart: unless-stopped
+    depends_on:
+      - api
+      - frigate
+    environment:
+      <<: *common-env
+    volumes:
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${WEB_HTTP_PORT:-8080}:80"
+    networks:
+      - banusnvr_net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Cloudflare Tunnel (optional — only starts if CLOUDFLARE_TUNNEL_TOKEN is set)
+  # ---------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: banusnvr-cloudflared
+    restart: unless-stopped
+    profiles: ["cloudflare", "default"]
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - web
+    networks:
+      - banusnvr_net
+
+networks:
+  banusnvr_net:
+    driver: bridge
+
+volumes:
+  db_data:
+  mqtt_data:
+  ollama_data:
+  ring_data:
+  frigate_storage:

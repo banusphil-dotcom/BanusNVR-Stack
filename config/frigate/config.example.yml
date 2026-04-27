@@ -1,0 +1,104 @@
+# =============================================================================
+# Frigate NVR — example configuration. Copy this to ./config/frigate/config.yml
+# and edit (or use the BanusNVR cameras UI which writes this file for you).
+# =============================================================================
+
+mqtt:
+  host: mqtt
+  port: 1883
+  topic_prefix: frigate
+  stats_interval: 60
+
+database:
+  path: /config/frigate.db
+
+detectors:
+  openvino:
+    type: openvino
+    device: AUTO
+    model_path: /config/yolo11s.onnx
+
+model:
+  path: /config/yolo11s.onnx
+  width: 800
+  height: 800
+  input_tensor: nchw
+  input_pixel_format: rgb
+  input_dtype: float
+  model_type: yolo-generic
+  labelmap_path: /labelmap/coco-80.txt
+
+ffmpeg:
+  hwaccel_args: preset-vaapi
+  output_args:
+    record: preset-record-generic-audio-aac
+
+objects:
+  track: [person, cat, dog, car, bird]
+  filters:
+    person: { min_area: 1500, min_score: 0.55, threshold: 0.72 }
+    cat:    { min_area: 500,  min_score: 0.30, threshold: 0.50 }
+    dog:    { min_area: 500,  min_score: 0.20, threshold: 0.35 }
+    car:    { min_area: 2000, min_score: 0.55, threshold: 0.72 }
+    bird:   { min_area: 400,  min_score: 0.35, threshold: 0.50 }
+
+record:
+  enabled: true
+  alerts:
+    retain: { days: 30, mode: motion }
+  detections:
+    retain: { days: 14, mode: motion }
+  continuous:
+    days: 0
+  motion:
+    days: 3
+
+snapshots:
+  enabled: true
+  clean_copy: true
+  timestamp: false
+  bounding_box: true
+  retain: { default: 30 }
+
+motion:
+  threshold: 30
+  contour_area: 20
+  improve_contrast: true
+
+ui:
+  time_format: 24hour
+  timezone: Europe/London
+
+version: 0.17-0
+
+# ---------------------------------------------------------------------------
+# go2rtc streams — define one entry per camera
+# ---------------------------------------------------------------------------
+go2rtc:
+  streams:
+    example_camera:
+      - rtsp://USER:PASSWORD@192.168.1.50:554/stream1
+    example_camera_sub:
+      - rtsp://USER:PASSWORD@192.168.1.50:554/stream2
+
+# ---------------------------------------------------------------------------
+# Cameras — at least one required
+# ---------------------------------------------------------------------------
+cameras:
+  example_camera:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/example_camera
+          roles: [record]
+        - path: rtsp://127.0.0.1:8554/example_camera_sub
+          roles: [detect]
+    detect:
+      enabled: true
+      width: 640
+      height: 360
+      fps: 5
+    objects:
+      track: [person, cat, dog]
+    zones:
+      full_zone:
+        coordinates: 0,0,1,0,1,1,0,1

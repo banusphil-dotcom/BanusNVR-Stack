@@ -1,0 +1,46 @@
+# =============================================================================
+# BanusNVR — Optional ML Server (GPU offload)
+# =============================================================================
+# Run on a separate GPU host (or same host if you have a GPU). Then point
+# DEEP_ML_URL=http://<ml-host>:8765 in your main .env.
+#
+#   docker compose -f docker-compose.ml.yml pull
+#   docker compose -f docker-compose.ml.yml up -d
+#
+# Exposes:
+#   POST /v1/detect      — YOLO object detection
+#   POST /v1/embedding   — Person ReID + image CNN embeddings
+#   POST /v1/faces       — InsightFace detection + 512-d embeddings
+#   POST /v1/chat/completions — OpenAI-compatible LLM proxy (optional)
+#   GET  /v1/health
+# =============================================================================
+
+services:
+  ml:
+    image: ${BANUSNVR_REGISTRY:-ghcr.io/banusphil-dotcom}/banusnvr-ml:${BANUSNVR_TAG:-latest}
+    container_name: banusnvr-ml
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/London}
+      ML_API_KEY: ${ML_API_KEY:-}
+      LLM_BACKEND_URL: ${LLM_BACKEND_URL:-}
+    ports:
+      - "${ML_PORT:-8765}:8765"
+    # Uncomment for NVIDIA GPU support (requires nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    volumes:
+      - ml_models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  ml_models:

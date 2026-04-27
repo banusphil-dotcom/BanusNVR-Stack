@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BanusNVR — Setup</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>BanusNVR Setup</h1>
+    <p class="lead">
+      Fill in the values below and click <strong>Save configuration</strong>.
+      A <code>.env</code> file will be written to the project root. After that,
+      stop this wizard and run <code>docker compose up -d</code>.
+    </p>
+  </header>
+
+  <form method="post" action="/save">
+    {% for section in sections %}
+      <fieldset>
+        <legend>{{ section.title }}</legend>
+        {% if section.help %}<p class="hint">{{ section.help|safe }}</p>{% endif %}
+        {% for key, label, default, type in section.fields %}
+          <label>
+            <span>{{ label }}</span>
+            <input
+              type="{{ type }}"
+              name="{{ key }}"
+              value="{{ default }}"
+              {% if type == 'password' %}autocomplete="new-password"{% endif %}
+            >
+            <small class="key">{{ key }}</small>
+          </label>
+        {% endfor %}
+      </fieldset>
+    {% endfor %}
+
+    <button type="submit">Save configuration</button>
+  </form>
+
+  <footer>
+    <p>
+      Tip: anything left blank will use the default from <code>.env.example</code>.
+      Strong passwords and JWT secrets are generated automatically if omitted.
+    </p>
+  </footer>
+</body>
+</html>

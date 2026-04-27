@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BanusNVR — Setup complete</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Configuration saved</h1>
+  </header>
+  <main>
+    <p>Your configuration has been written to <code>{{ env_path }}</code>.</p>
+    <h2>Next steps</h2>
+    <ol>
+      <li>Stop this wizard:
+        <pre>docker compose --profile setup down</pre>
+      </li>
+      <li>Pull the latest images:
+        <pre>docker compose pull</pre>
+      </li>
+      <li>Start the stack:
+        <pre>docker compose up -d</pre>
+      </li>
+      <li>Open the app:
+        <pre>http://&lt;this-host&gt;:8080</pre>
+      </li>
+    </ol>
+    <p>
+      To change settings later, either edit <code>.env</code> directly and run
+      <code>docker compose up -d</code>, or delete <code>.env</code> and re-launch
+      the setup profile.
+    </p>
+  </main>
+</body>
+</html>

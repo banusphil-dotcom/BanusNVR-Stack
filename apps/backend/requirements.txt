@@ -1,0 +1,51 @@
+# =============================================================================
+# BanusNas API — Python Dependencies  (updated 2026-04)
+# =============================================================================
+
+# --- Web Framework ---
+fastapi>=0.135.0
+uvicorn[standard]>=0.43.0
+uvloop>=0.22.0
+python-multipart>=0.0.22
+websockets>=16.0
+
+# --- Database ---
+sqlalchemy[asyncio]>=2.0.49
+asyncpg>=0.31.0
+alembic>=1.18.0
+
+# --- Authentication ---
+python-jose[cryptography]>=3.5.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.2.1,<5
+
+# --- HTTP Client (Frigate API proxy) ---
+httpx>=0.28.1
+
+# --- Video / CV ---
+av>=17.0.0
+opencv-python-headless>=4.13.0
+numpy>=2.0.0
+
+# --- Object Detection (OpenVINO for Intel iGPU) ---
+openvino>=2024.6.0
+scipy>=1.11.0
+
+# --- Face Recognition: InsightFace (SCRFD + ArcFace 512-dim) ---
+insightface>=0.7.3
+onnxruntime>=1.18.0
+
+# --- Notifications ---
+pywebpush>=2.3.0
+py-vapid>=1.9.4
+aiosmtplib>=3.0.2
+
+# --- Utilities ---
+pydantic-settings>=2.13.0
+pydantic[email]>=2.12.0
+python-dotenv>=1.2.0
+Pillow>=12.0.0
+aiofiles>=25.1.0
+
+# --- MQTT (Frigate events + Ring camera discovery) ---
+paho-mqtt>=2.0.0

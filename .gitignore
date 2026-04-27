@@ -1,0 +1,39 @@
+# Secrets / runtime
+.env
+.env.local
+*.env.bak
+
+# Local data
+/data/
+/config/frigate/config.yml
+/config/frigate/*.db
+/config/frigate/*.db-shm
+/config/frigate/*.db-wal
+/config/frigate/.jwt_secret
+/config/frigate/.exports
+/config/frigate/.timeline
+/config/frigate/.vacuum
+/config/frigate/.search_stats.json
+/config/frigate/yolo*.onnx
+/config/frigate/yolo*.pt
+/config/frigate/backup.db
+/config/frigate/config.yml.bak.*
+/config/frigate/go2rtc_homekit.yml
+
+# Build / dev
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.vite/
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
