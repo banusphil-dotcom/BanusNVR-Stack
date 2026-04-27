@@ -5,7 +5,9 @@
 # --- Stage 1: Export MobileNetV2 features to ONNX (for pet/vehicle recognition) ---
 FROM python:3.11-slim AS model-export
 RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libxcb1 && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir torch torchvision onnx
+# Newer torch.onnx.export eagerly imports onnxscript on call, even for the legacy
+# opset path. Install it explicitly so the export step succeeds.
+RUN pip install --no-cache-dir torch torchvision onnx onnxscript
 
 # Export MobileNetV2 features-only (1280-dim, no classifier head)
 RUN python -c "\
