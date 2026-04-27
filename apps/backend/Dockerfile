@@ -10,15 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2
 RUN pip install --no-cache-dir torch torchvision onnx onnxscript
 
 # Export MobileNetV2 features-only (1280-dim, no classifier head)
-RUN python -c "\
+RUN mkdir -p /models && python -c "\
 import torch, torchvision; \
 m = torchvision.models.mobilenet_v2(weights='DEFAULT'); \
 m.classifier = torch.nn.Identity(); \
 m.eval(); \
 x = torch.randn(1, 3, 224, 224); \
-torch.onnx.export(m, x, '/models/mobilenetv2_features.onnx', opset_version=12, \
-    input_names=['input'], output_names=['features'])" \
-    && mkdir -p /models
+torch.onnx.export(m, x, '/models/mobilenetv2_features.onnx', opset_version=18, \
+    input_names=['input'], output_names=['features'])"
 
 # --- Stage 1b: (Coral Edge TPU pre-compilation has been removed) -------------
 # The previous stage tried to pre-compile a MobileNetV2 INT8 TFLite for the
