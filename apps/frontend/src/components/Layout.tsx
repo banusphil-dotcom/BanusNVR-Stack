@@ -20,6 +20,7 @@ import { useAuth } from "../hooks/useAuth";
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Live" },
   { to: "/events", icon: Bell, label: "Events" },
+  { to: "/cameras", icon: Camera, label: "Cameras" },
   { to: "/profiles", icon: Users, label: "Profiles" },
   { to: "/search", icon: Search, label: "Search" },
   { to: "/settings", icon: SettingsIcon, label: "Settings" },
