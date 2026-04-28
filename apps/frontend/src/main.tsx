@@ -41,8 +41,16 @@ const queryClient = new QueryClient({
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").then((reg) => {
-      // Check for updates every 60s
-      setInterval(() => reg.update(), 60_000);
+      // Check for updates every 60s while open
+      setInterval(() => reg.update().catch(() => {}), 60_000);
+      // Also force a check when the tab/PWA regains focus — covers the case
+      // where the user backgrounds the app for a long time and a deploy
+      // happened in the meantime.
+      const focusUpdate = () => { reg.update().catch(() => {}); };
+      window.addEventListener("focus", focusUpdate);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) focusUpdate();
+      });
     });
     // Auto-reload the page once the new SW takes control so users
     // immediately see UI changes after a deploy (no manual hard-refresh).

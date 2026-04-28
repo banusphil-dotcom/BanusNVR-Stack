@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Crosshair, SlidersHorizontal } from "lucide-react";
 import { api } from "../api";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 interface Props {
   cameraId: number | string;
@@ -510,6 +511,28 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
 
   const [showSettings, setShowSettings] = useState(false);
 
+  // Live "detecting" indicator. Whenever a `detection` event arrives over
+  // the shared WebSocket for this camera, flash a pill in the corner so the
+  // user can see at a glance that motion / object detection is firing —
+  // *before* the slower recognition + analysis pipeline confirms anything.
+  const { events: wsEvents } = useWebSocket();
+  const [detectingObject, setDetectingObject] = useState<string | null>(null);
+  useEffect(() => {
+    if (!wsEvents.length) return;
+    const newest = wsEvents[0] as any;
+    if (!newest) return;
+    // Match either string or numeric camera_id.
+    const camMatches =
+      String(newest.camera_id) === String(cameraId) ||
+      newest.camera_name === cameraName;
+    if (!camMatches) return;
+    if (newest.type !== "detection" && newest.type !== "event_started") return;
+    const label = newest.object_type || newest.event_type || "object";
+    setDetectingObject(label);
+    const t = setTimeout(() => setDetectingObject(null), 4000);
+    return () => clearTimeout(t);
+  }, [wsEvents, cameraId, cameraName]);
+
   return (
     <div className={`relative bg-black rounded-lg overflow-hidden ${className}`}>
       {snapUrl && !liveReady && (
@@ -536,6 +559,15 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
       {!hideLabel && (
         <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-xs font-medium">
           {cameraName}
+        </div>
+      )}
+      {detectingObject && (
+        <div
+          className={`absolute ${hideLabel ? "top-2" : "top-9"} left-2 flex items-center gap-1.5 bg-emerald-600/90 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shadow-lg animate-pulse`}
+          title={`Detecting ${detectingObject}`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-white" />
+          <span>Detecting {detectingObject}</span>
         </div>
       )}
       {status === "live" && liveReady && (

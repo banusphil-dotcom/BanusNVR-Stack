@@ -214,7 +214,10 @@ async def list_events(
     if event_type:
         filters.append(Event.event_type == EventType(event_type))
     if object_type:
-        filters.append(Event.object_type == object_type)
+        if object_type.lower() == "pet":
+            filters.append(Event.object_type.in_(["cat", "dog", "bird"]))
+        else:
+            filters.append(Event.object_type == object_type)
     if named_object_id:
         filters.append(Event.named_object_id == named_object_id)
     if from_date:
@@ -382,7 +385,13 @@ async def list_events_grouped(
     # Build filters
     filters = []
     if object_type:
-        filters.append(Event.object_type == object_type)
+        # `pet` is a UI synonym that matches any cat/dog/bird detection so the
+        # user doesn't have to care whether Frigate misclassified a cat as a
+        # dog (which it regularly does on our cameras).
+        if object_type.lower() == "pet":
+            filters.append(Event.object_type.in_(["cat", "dog", "bird"]))
+        else:
+            filters.append(Event.object_type == object_type)
     if camera_id:
         filters.append(Event.camera_id == camera_id)
     if recognised is True:

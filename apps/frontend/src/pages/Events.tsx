@@ -5,6 +5,7 @@ import { api, getToken } from "../api";
 import { Play, Trash2, ChevronDown, Camera, RefreshCw, GraduationCap, User, Cat, Car, Box, ArrowRightLeft, Sparkles, RotateCcw, ImageUp, Eye, EyeOff, Users, Bell } from "lucide-react";
 import { useReExtractModal, ReExtractModal } from "../components/ReExtractModal";
 import { useReclassifyModal, ReclassifyModal } from "../components/ReclassifyModal";
+import { useWebSocket } from "../hooks/useWebSocket";
 
 interface Suggestion {
   named_object_id: number;
@@ -98,14 +99,25 @@ function groupDisplayLabel(group: EventGroup): string {
   }
   // No recognized names
   if (group.object_count === 1) {
-    return group.events[0]?.object_type || "Detection";
+    return prettyObjectType(group.events[0]?.object_type) || "Detection";
   }
   return `${group.object_count} detections`;
 }
 
 function eventMemberLabel(ev: EventObj): string {
   if (ev.named_object_name) return ev.named_object_name;
-  return ev.object_type || ev.event_type;
+  return prettyObjectType(ev.object_type) || ev.event_type;
+}
+
+// Frigate's detector regularly mistakes cats for dogs (and vice versa) on
+// our cameras, so for unrecognised animal events we just call them "pet"
+// and avoid the cat-vs-dog confusion in the UI. Recognised animals always
+// show the named object's actual name regardless.
+function prettyObjectType(t: string | null | undefined): string | null {
+  if (!t) return null;
+  const lower = t.toLowerCase();
+  if (lower === "cat" || lower === "dog" || lower === "bird") return "pet";
+  return t;
 }
 
 export default function Events() {
@@ -127,6 +139,17 @@ export default function Events() {
     api.post("/api/notifications/mark-read").catch(() => {});
     qc.invalidateQueries({ queryKey: ["unread-count"] });
   }, []);
+
+  // Live refresh: when a new event arrives over the WebSocket, drop the
+  // events-grouped cache so the list re-fetches and the new event appears
+  // at the top without the user having to pull-to-refresh. Only do this on
+  // the first page so we don't yank the user out of mid-pagination.
+  const { events: liveEvents } = useWebSocket();
+  useEffect(() => {
+    if (page !== 1) return;
+    if (!liveEvents.length) return;
+    qc.invalidateQueries({ queryKey: ["events-grouped"] });
+  }, [liveEvents.length, page]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["events-grouped", page, typeFilter, recogTab],
@@ -522,8 +545,7 @@ export default function Events() {
             >
             <option value="">All</option>
             <option value="person">Person</option>
-            <option value="cat">Cat</option>
-            <option value="dog">Dog</option>
+            <option value="pet">Pet (cat / dog / bird)</option>
             <option value="car">Car</option>
             <option value="truck">Truck</option>
             </select>
