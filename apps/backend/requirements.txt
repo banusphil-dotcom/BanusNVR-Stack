@@ -49,3 +49,12 @@ aiofiles>=25.1.0
 
 # --- MQTT (Frigate events + Ring camera discovery) ---
 paho-mqtt>=2.0.0
+
+# --- TOTP 2FA ---
+pyotp>=2.9.0
+
+# --- TensorFlow Lite (Coral/EdgeTPU) ---
+tflite-runtime>=2.5.0
+
+# --- YOLOv8 (ultralytics) ---
+ultralytics>=8.0.0
