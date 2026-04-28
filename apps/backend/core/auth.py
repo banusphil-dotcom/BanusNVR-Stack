@@ -1,3 +1,39 @@
+# ----- API Token authentication -------------------------------------------
+import hashlib
+from models.api_tokens import APIToken
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import HTTPException, status
+
+async def get_user_from_api_token(raw_token: str, session: AsyncSession) -> Optional["User"]:
+    """Authenticate using an API token (for Authorization: Bearer ...)."""
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    result = await session.execute(
+        select(APIToken).where(APIToken.token_hash == token_hash, APIToken.revoked == False)
+    )
+    token = result.scalar_one_or_none()
+    if not token or (token.expires_at and token.expires_at < datetime.now(timezone.utc)):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired API token")
+    # Update last_used_at
+    token.last_used_at = datetime.now(timezone.utc)
+    await session.commit()
+    # Return user
+    from models.schemas import User
+    result = await session.execute(select(User).where(User.id == token.user_id))
+    user = result.scalar_one_or_none()
+    if not user or getattr(user, "disabled", False):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
+    return user
+import pyotp
+# ----- TOTP 2FA helpers ---------------------------------------------------
+def generate_totp_secret() -> str:
+    return pyotp.random_base32()
+
+def get_totp_uri(username: str, secret: str, issuer: str = "BanusNVR") -> str:
+    return pyotp.totp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer)
+
+def verify_totp(token: str, secret: str) -> bool:
+    totp = pyotp.TOTP(secret)
+    return totp.verify(token, valid_window=1)
 """BanusNas — JWT authentication, lockout, and session validation.
 
 Tokens carry a session id (`sid`) so revoking a row in `user_sessions`

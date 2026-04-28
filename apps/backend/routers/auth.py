@@ -18,7 +18,54 @@ from core.auth import (
     register_failed_login,
     register_successful_login,
     verify_password,
+    generate_totp_secret,
+    get_totp_uri,
+    verify_totp,
 )
+# ----- TOTP 2FA endpoints -------------------------------------------------
+
+class TOTPSetupResponse(BaseModel):
+    secret: str
+    uri: str
+
+@router.post("/totp/setup", response_model=TOTPSetupResponse)
+async def totp_setup(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    """Begin TOTP setup: returns secret and provisioning URI."""
+    if user.totp_enabled:
+        raise HTTPException(400, "TOTP already enabled")
+    secret = generate_totp_secret()
+    user.totp_secret = secret
+    session.add(user)
+    await session.commit()
+    return TOTPSetupResponse(secret=secret, uri=get_totp_uri(user.username, secret))
+
+
+class TOTPVerifyRequest(BaseModel):
+    token: str
+
+@router.post("/totp/verify")
+async def totp_verify(
+    data: TOTPVerifyRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    if not user.totp_secret:
+        raise HTTPException(400, "No TOTP secret set up")
+    if not verify_totp(data.token, user.totp_secret):
+        raise HTTPException(400, "Invalid TOTP code")
+    user.totp_enabled = True
+    session.add(user)
+    await session.commit()
+    return {"message": "TOTP enabled"}
+
+
+@router.post("/totp/disable")
+async def totp_disable(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    user.totp_enabled = False
+    user.totp_secret = None
+    session.add(user)
+    await session.commit()
+    return {"message": "TOTP disabled"}
 from core.permissions import permissions_for, user_role
 from models.database import get_session
 from models.schemas import NotificationRule, User, UserRole, UserSession
@@ -113,6 +160,14 @@ class LoginResponse(BaseModel):
     must_change_password: bool = False
 
 
+
+# --- Login with TOTP support ---
+class LoginStep(BaseModel):
+    step: str
+    session_id: int | None = None
+    user_id: int | None = None
+    temp_token: str | None = None
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     data: UserLogin,
@@ -122,8 +177,6 @@ async def login(
     result = await session.execute(select(User).where(User.username == data.username))
     user = result.scalar_one_or_none()
 
-    # Distinguish unknown user from bad password only in the audit log;
-    # client always gets the same generic 401.
     if not user:
         await audit(
             session,
@@ -151,6 +204,67 @@ async def login(
         await audit(session, action="auth.login_failed", actor=user, detail={"reason": "bad_password", "attempts": user.failed_login_attempts}, request=request)
         await session.commit()
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # If TOTP is enabled, require a second step
+    if user.totp_enabled:
+        # Issue a temp token (JWT with type=totp)
+        from core.config import settings
+        from jose import jwt
+        from jose.exceptions import JWTError
+        from datetime import timedelta, datetime, timezone
+        expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+        payload = {"sub": str(user.id), "exp": expire, "type": "totp"}
+        temp_token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        return LoginResponse(
+            access_token="",
+            refresh_token="",
+            must_change_password=user.must_change_password,
+            token_type="totp",
+            temp_token=temp_token,
+        )
+
+    register_successful_login(user)
+    sess = await _create_session(session, user, request)
+    await audit(session, action="auth.login_success", actor=user, target_type="session", target_id=sess.id, request=request)
+    await session.commit()
+
+    return LoginResponse(
+        access_token=create_access_token(user.id, user.username, sess.id),
+        refresh_token=create_refresh_token(user.id, sess.id),
+        must_change_password=user.must_change_password,
+    )
+
+
+# --- TOTP login step ---
+class TOTPLoginRequest(BaseModel):
+    temp_token: str
+    token: str
+
+@router.post("/login/totp", response_model=LoginResponse)
+async def login_totp(
+    data: TOTPLoginRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    # Validate temp token
+    from core.config import settings
+    from jose import jwt
+    from jose.exceptions import JWTError
+    from datetime import datetime, timezone
+    try:
+        payload = jwt.decode(data.temp_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        if payload.get("type") != "totp":
+            raise HTTPException(401, "Invalid token type")
+        user_id = int(payload["sub"])
+    except JWTError:
+        raise HTTPException(401, "Invalid or expired token")
+
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.totp_enabled or not user.totp_secret:
+        raise HTTPException(401, "TOTP not enabled")
+    if not verify_totp(data.token, user.totp_secret):
+        raise HTTPException(401, "Invalid TOTP code")
 
     register_successful_login(user)
     sess = await _create_session(session, user, request)
@@ -217,7 +331,20 @@ async def logout(
 
 @router.get("/me", response_model=UserResponse)
 async def get_profile(user: User = Depends(get_current_user)):
-    return user
+    # Ensure totp_enabled is present in response
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        is_admin=user.is_admin,
+        role=user.role,
+        theme=user.theme,
+        must_change_password=user.must_change_password,
+        disabled=user.disabled,
+        last_login_at=user.last_login_at,
+        created_at=user.created_at,
+        totp_enabled=getattr(user, "totp_enabled", False),
+    )
 
 
 @router.get("/me/permissions")

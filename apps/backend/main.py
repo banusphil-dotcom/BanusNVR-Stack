@@ -249,6 +249,12 @@ app.include_router(summary_router.router)
 app.include_router(ring_router.router)
 app.include_router(credentials.router)
 app.include_router(users.router)
+
+from routers import api_tokens, webauthn, oidc, magic_links
+app.include_router(api_tokens.router)
+app.include_router(webauthn.router)
+app.include_router(oidc.router)
+app.include_router(magic_links.router)
 app.include_router(audit_logs.router)
 
 

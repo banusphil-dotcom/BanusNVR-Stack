@@ -31,6 +31,7 @@ class TokenRefresh(BaseModel):
 
 
 class UserResponse(BaseModel):
+
     id: int
     username: str
     email: str
@@ -41,6 +42,7 @@ class UserResponse(BaseModel):
     disabled: bool = False
     last_login_at: Optional[datetime] = None
     created_at: datetime
+    totp_enabled: bool = False
 
     model_config = {"from_attributes": True}
 

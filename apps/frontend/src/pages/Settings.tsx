@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, getToken } from "../api";
 import { useAuth } from "../hooks/useAuth";
+import MySessions from "../components/MySessions";
 import {
   Bell, Mail, Shield, HardDrive, Save, Key, Cpu, MemoryStick,
   Monitor, RefreshCw, Smartphone, LogOut,
@@ -1254,12 +1255,18 @@ function StorageSettings() {
 
 /* ═══════════════════════ Account Settings ═══════════════════════ */
 
+
+import TOTPSetupModal from "../components/TOTPSetupModal";
+
 function AccountSettings() {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshProfile } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [status, setStatus] = useState("");
+  const [showTOTP, setShowTOTP] = useState(false);
+  const [totpBusy, setTotpBusy] = useState(false);
+  const [totpError, setTotpError] = useState<string | null>(null);
 
   const changeMut = useMutation({
     mutationFn: (data: { old_password: string; new_password: string }) =>
@@ -1271,6 +1278,19 @@ function AccountSettings() {
     },
     onError: (err: any) => setStatus(err.message),
   });
+
+  const disableTOTP = async () => {
+    setTotpBusy(true);
+    setTotpError(null);
+    try {
+      await api.post("/api/auth/totp/disable", {});
+      await refreshProfile();
+    } catch (err: any) {
+      setTotpError(err.message || "Failed to disable 2FA");
+    } finally {
+      setTotpBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -1302,6 +1322,42 @@ function AccountSettings() {
             <button onClick={logout} className="btn-danger text-sm flex items-center gap-1">
               <LogOut size={14} /> Logout
             </button>
+          </div>
+
+          {/* 2FA (TOTP) section */}
+          <div className="border-t border-slate-800 pt-3 mt-3">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Shield size={14} className="text-blue-400" /> Two-Factor Authentication (2FA)
+            </h4>
+            {user?.totp_enabled ? (
+              <div className="flex items-center gap-3">
+                <span className="text-emerald-400 font-medium">Enabled</span>
+                <button
+                  onClick={disableTOTP}
+                  className="btn-danger btn-xs"
+                  disabled={totpBusy}
+                >
+                  Disable 2FA
+                </button>
+                {totpError && <span className="text-xs text-red-400 ml-2">{totpError}</span>}
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowTOTP(true)}
+                className="btn-primary btn-xs"
+              >
+                Enable 2FA
+              </button>
+            )}
+          </div>
+
+          {showTOTP && <TOTPSetupModal onClose={() => { setShowTOTP(false); refreshProfile(); }} />}
+
+          <div className="border-t border-slate-800 pt-3 mt-3">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Monitor size={14} className="text-slate-400" /> Active sessions
+            </h4>
+            <MySessions />
           </div>
         </div>
       )}

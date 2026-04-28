@@ -90,6 +90,11 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+
+    # TOTP 2FA
+    totp_secret: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     notification_rules: Mapped[list["NotificationRule"]] = relationship(back_populates="user", cascade="all, delete-orphan")

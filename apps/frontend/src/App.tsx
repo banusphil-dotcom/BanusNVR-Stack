@@ -15,6 +15,9 @@ import ObjectProfile from "./pages/ObjectProfile";
 import DailySummary from "./pages/DailySummary";
 import Retrain from "./pages/Retrain";
 import RingSetup from "./pages/RingSetup";
+import Users from "./pages/Users";
+import AuditLog from "./pages/AuditLog";
+import ForceChangePasswordModal from "./components/ForceChangePasswordModal";
 
 function RedirectToProfile() {
   const { id } = useParams();
@@ -59,6 +62,8 @@ function AppRoutes() {
         <Route path="/ring" element={<RingSetup />} />
         <Route path="/notifications" element={<Navigate to="/events" replace />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/users" element={<Users />} />
+        <Route path="/audit" element={<AuditLog />} />
         <Route path="/summary" element={<DailySummary />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -70,6 +75,7 @@ export default function App() {
   return (
     <AuthProvider>
       <AppRoutes />
+      <ForceChangePasswordModal />
     </AuthProvider>
   );
 }

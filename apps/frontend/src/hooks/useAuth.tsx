@@ -1,19 +1,45 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, setToken } from "../api";
 
-interface User {
+export type UserRole = "admin" | "operator" | "viewer" | "guest";
+
+export interface User {
   id: string;
   username: string;
+  email?: string;
   is_admin: boolean;
+  role: UserRole;
   theme?: string;
+  must_change_password?: boolean;
+  disabled?: boolean;
+  last_login_at?: string | null;
+  totp_enabled?: boolean;
+}
+
+interface PermissionsResponse {
+  role: UserRole;
+  permissions: string[];
+  must_change_password: boolean;
+}
+
+interface LoginResponse {
+  access_token: string;
+  refresh_token: string;
+  must_change_password?: boolean;
 }
 
 interface AuthCtx {
   user: User | null;
+  permissions: string[];
   loading: boolean;
+  mustChangePassword: boolean;
+  hasPermission: (perm: string) => boolean;
+  hasRole: (...roles: UserRole[]) => boolean;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
+  setMustChangePassword: (v: boolean) => void;
 }
 
 const AuthContext = createContext<AuthCtx>(null!);
@@ -37,7 +63,22 @@ function syncTheme(theme: string | undefined) {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [permissions, setPermissions] = useState<string[]>([]);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const loadProfile = async () => {
+    const u = await api.get<User>("/api/auth/me");
+    syncTheme(u.theme);
+    setUser(u);
+    try {
+      const p = await api.get<PermissionsResponse>("/api/auth/me/permissions");
+      setPermissions(p.permissions);
+      setMustChangePassword(p.must_change_password);
+    } catch {
+      setPermissions([]);
+    }
+  };
 
   useEffect(() => {
     const token = localStorage.getItem("banusnas_token");
@@ -45,23 +86,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    api
-      .get<User>("/api/auth/me")
-      .then((u) => { syncTheme(u.theme); setUser(u); })
+    loadProfile()
       .catch(() => setToken(null))
       .finally(() => setLoading(false));
   }, []);
 
   const login = async (username: string, password: string) => {
-    const data = await api.post<{ access_token: string; refresh_token: string }>("/api/auth/login", {
-      username,
-      password,
-    });
+    const data = await api.post<LoginResponse>("/api/auth/login", { username, password });
     setToken(data.access_token);
     localStorage.setItem("banusnas_refresh", data.refresh_token);
-    const me = await api.get<User>("/api/auth/me");
-    syncTheme(me.theme);
-    setUser(me);
+    await loadProfile();
+    if (data.must_change_password) setMustChangePassword(true);
   };
 
   const register = async (username: string, password: string) => {
@@ -69,14 +104,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await login(username, password);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try { await api.post("/api/auth/logout"); } catch { /* ignore */ }
     setToken(null);
     localStorage.removeItem("banusnas_refresh");
     setUser(null);
+    setPermissions([]);
+    setMustChangePassword(false);
   };
 
+  const hasPermission = (perm: string) => permissions.includes(perm);
+  const hasRole = (...roles: UserRole[]) => !!user && roles.includes(user.role);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        permissions,
+        loading,
+        mustChangePassword,
+        hasPermission,
+        hasRole,
+        login,
+        register,
+        logout,
+        refreshProfile: loadProfile,
+        setMustChangePassword,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

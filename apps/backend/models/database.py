@@ -44,6 +44,9 @@ async def init_db():
         ("users", "must_change_password", "BOOLEAN DEFAULT false NOT NULL"),
         ("users", "last_login_at", "TIMESTAMPTZ"),
         ("users", "disabled", "BOOLEAN DEFAULT false NOT NULL"),
+        # --- Phase 3: TOTP 2FA ---
+        ("users", "totp_secret", "VARCHAR(32)"),
+        ("users", "totp_enabled", "BOOLEAN DEFAULT false NOT NULL"),
     ]
     async with engine.begin() as conn:
         for table, column, col_type in _migrations:

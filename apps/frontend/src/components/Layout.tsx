@@ -11,6 +11,8 @@ import {
   RefreshCw,
   Menu,
   Camera,
+  UserCog,
+  ScrollText,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
@@ -26,9 +28,16 @@ const navItems = [
   { to: "/settings", icon: SettingsIcon, label: "Settings" },
 ];
 
+const adminNavItems = [
+  { to: "/users", icon: UserCog, label: "Users", permission: "manage_users" },
+  { to: "/audit", icon: ScrollText, label: "Audit log", permission: "view_audit_log" },
+];
+
 export default function Layout() {
   const { events, connected } = useWebSocket();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
+  const visibleAdminItems = adminNavItems.filter((i) => hasPermission(i.permission));
+  const allNavItems = [...navItems, ...visibleAdminItems];
   const location = useLocation();
   const navigate = useNavigate();
   const deferredPrompt = useRef<BeforeInstallPromptEvent | null>(null);
@@ -154,6 +163,19 @@ export default function Layout() {
             )}
           </button>
           <span className="text-sm text-slate-400 hidden sm:block">{user?.username}</span>
+          {user?.role && user.role !== "viewer" && (
+            <span
+              className={`hidden sm:inline-block text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide ${
+                user.role === "admin"
+                  ? "bg-red-500/15 text-red-300 border border-red-500/30"
+                  : user.role === "operator"
+                    ? "bg-blue-500/15 text-blue-300 border border-blue-500/30"
+                    : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+              }`}
+            >
+              {user.role}
+            </span>
+          )}
         </div>
       </header>
 
@@ -213,7 +235,7 @@ export default function Layout() {
 
         {/* Cascade items */}
         {fabOpen &&
-          navItems.map(({ to, icon: Icon, label }, i) => {
+          allNavItems.map(({ to, icon: Icon, label }, i) => {
             const isActive = location.pathname === to || (to !== "/" && location.pathname.startsWith(to));
             return (
               <button
