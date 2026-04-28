@@ -1,5 +1,7 @@
-# ----- API Token authentication -------------------------------------------
+
+from typing import Optional
 import hashlib
+
 from models.api_tokens import APIToken
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
@@ -42,8 +44,8 @@ having to rotate the global signing key. This is what powers the "kick
 device off" admin action.
 """
 
+
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import Depends, HTTPException, Query, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
