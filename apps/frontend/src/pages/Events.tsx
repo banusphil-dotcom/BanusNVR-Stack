@@ -6,6 +6,7 @@ import { Play, Trash2, ChevronDown, Camera, RefreshCw, GraduationCap, User, Cat,
 import { useReExtractModal, ReExtractModal } from "../components/ReExtractModal";
 import { useReclassifyModal, ReclassifyModal } from "../components/ReclassifyModal";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { prettyObjectType } from "../utils/objectType";
 
 interface Suggestion {
   named_object_id: number;
@@ -107,17 +108,6 @@ function groupDisplayLabel(group: EventGroup): string {
 function eventMemberLabel(ev: EventObj): string {
   if (ev.named_object_name) return ev.named_object_name;
   return prettyObjectType(ev.object_type) || ev.event_type;
-}
-
-// Frigate's detector regularly mistakes cats for dogs (and vice versa) on
-// our cameras, so for unrecognised animal events we just call them "pet"
-// and avoid the cat-vs-dog confusion in the UI. Recognised animals always
-// show the named object's actual name regardless.
-function prettyObjectType(t: string | null | undefined): string | null {
-  if (!t) return null;
-  const lower = t.toLowerCase();
-  if (lower === "cat" || lower === "dog" || lower === "bird") return "pet";
-  return t;
 }
 
 export default function Events() {
@@ -368,7 +358,7 @@ export default function Events() {
         <div className="bg-slate-800 rounded-lg p-2.5 space-y-2">
           <p className="text-xs font-medium">Reanalyse as:</p>
           <div className="flex flex-wrap gap-1.5">
-            {["person", "cat", "dog", "car", "truck", "motorcycle"].map((t) => (
+            {["person", "pet", "car", "truck", "motorcycle"].map((t) => (
               <button
                 key={t}
                 onClick={() => reanalyseMut.mutate({ id: ev.id, objectType: t })}
@@ -376,7 +366,7 @@ export default function Events() {
                 className="btn-secondary text-xs py-1 px-2.5 capitalize flex items-center gap-1"
               >
                 {t === "person" && <User size={12} />}
-                {(t === "cat" || t === "dog") && <Cat size={12} />}
+                {t === "pet" && <Cat size={12} />}
                 {(t === "car" || t === "truck" || t === "motorcycle") && <Car size={12} />}
                 {t}
               </button>

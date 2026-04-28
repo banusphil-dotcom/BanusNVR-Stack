@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Crosshair, SlidersHorizontal } from "lucide-react";
 import { api } from "../api";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { prettyObjectType } from "../utils/objectType";
 
 interface Props {
   cameraId: number | string;
@@ -483,8 +484,10 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
         ctx.lineWidth = 2;
         ctx.strokeRect(dx, dy, dw, dh);
 
-        // Label
-        const label = t.named_object_name || `${t.class_name} ${(t.confidence * 100).toFixed(0)}%`;
+        // Label — collapse cat/dog/bird to "pet" for unrecognised animals
+        // so the overlay matches the rest of the UI.
+        const displayClass = prettyObjectType(t.class_name) || t.class_name;
+        const label = t.named_object_name || `${displayClass} ${(t.confidence * 100).toFixed(0)}%`;
         ctx.font = "bold 11px sans-serif";
         const tm = ctx.measureText(label);
         const lh = 16;
@@ -527,7 +530,8 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
       newest.camera_name === cameraName;
     if (!camMatches) return;
     if (newest.type !== "detection" && newest.type !== "event_started") return;
-    const label = newest.object_type || newest.event_type || "object";
+    const rawLabel = newest.object_type || newest.event_type || "object";
+    const label = prettyObjectType(rawLabel) || rawLabel;
     setDetectingObject(label);
     const t = setTimeout(() => setDetectingObject(null), 4000);
     return () => clearTimeout(t);

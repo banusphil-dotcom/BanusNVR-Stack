@@ -96,7 +96,14 @@ class NotificationEngine:
                     continue
 
                 # Smart grouping: buffer detections on the same camera to group them
-                display_name = named_object_name or object_type.title()
+                # Collapse cat/dog/bird → "Pet" so the notification matches the
+                # UI label (Frigate's detector regularly mis-labels pets).
+                if named_object_name:
+                    display_name = named_object_name
+                elif object_type and object_type.lower() in ("cat", "dog", "bird"):
+                    display_name = "Pet"
+                else:
+                    display_name = object_type.title() if object_type else "Detection"
                 group_key = f"{rule.id}_{camera_id}"
 
                 if group_key in self._pending_groups:

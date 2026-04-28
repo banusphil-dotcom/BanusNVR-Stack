@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, getToken } from "../api";
 import { Bell, Trash2, CheckCheck, Mail, Smartphone } from "lucide-react";
+import { prettyObjectType } from "../utils/objectType";
 
 interface SentNotification {
   id: number;
@@ -122,7 +123,7 @@ export default function Notifications() {
                   {n.object_type && (
                     <>
                       <span>·</span>
-                      <span className="capitalize">{n.object_type}</span>
+                      <span className="capitalize">{prettyObjectType(n.object_type)}</span>
                     </>
                   )}
                   <span>·</span>

@@ -1337,6 +1337,14 @@ async def reanalyse_event(
         raise HTTPException(status_code=404, detail="Event not found")
 
     obj_type = object_type or event.object_type or "person"
+    # The UI exposes a single "pet" reanalyse button (cat/dog/bird are
+    # frequently mis-classified by Frigate, so we don't want users to have
+    # to pick the right one). Map back to a concrete animal class for the
+    # downstream pet recognition + attribute pipeline — prefer the event's
+    # own object_type when it's already a valid animal class.
+    if obj_type.lower() == "pet":
+        original = (event.object_type or "").lower()
+        obj_type = original if original in ("cat", "dog", "bird") else "cat"
 
     # Get crop image — prefer bbox crop from full snapshot to isolate the target
     crop = None
