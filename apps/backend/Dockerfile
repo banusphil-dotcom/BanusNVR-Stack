@@ -9,15 +9,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2
 # opset path. Install it explicitly so the export step succeeds.
 RUN pip install --no-cache-dir torch torchvision onnx onnxscript
 
-# Export MobileNetV2 features-only (1280-dim, no classifier head)
-RUN mkdir -p /models && python -c "\
-import torch, torchvision; \
+# Export MobileNetV2 features-only (1280-dim, no classifier head).
+# Force a single-file ONNX (no .onnx.data sidecar) so OpenVINO can load it
+# from any path. Newer torch defaults to external-data format for >2GB models
+# and *also* sometimes for smaller ones; we re-save through `onnx` to flatten.
+RUN mkdir -p /models /tmp/onnx-export && python -c "\
+import torch, torchvision, onnx; \
 m = torchvision.models.mobilenet_v2(weights='DEFAULT'); \
 m.classifier = torch.nn.Identity(); \
 m.eval(); \
 x = torch.randn(1, 3, 224, 224); \
-torch.onnx.export(m, x, '/models/mobilenetv2_features.onnx', opset_version=18, \
-    input_names=['input'], output_names=['features'])"
+torch.onnx.export(m, x, '/tmp/onnx-export/mobilenetv2_features.onnx', opset_version=18, \
+    input_names=['input'], output_names=['features']); \
+model = onnx.load('/tmp/onnx-export/mobilenetv2_features.onnx', load_external_data=True); \
+onnx.save_model(model, '/models/mobilenetv2_features.onnx', save_as_external_data=False); \
+print('exported single-file ONNX')"
 
 # --- Stage 1b: (Coral Edge TPU pre-compilation has been removed) -------------
 # The previous stage tried to pre-compile a MobileNetV2 INT8 TFLite for the

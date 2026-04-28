@@ -4,6 +4,15 @@
 # =============================================================================
 set -e
 
+# Heal old installs that have a leftover MobileNetV2 external-data sidecar
+# (caused OpenVINO load to fail with "Invalid usage of method for externally
+# stored data in file ..."). The image now ships a single-file ONNX, so the
+# .data sidecar is obsolete — delete it so the new file is used.
+if [ -f /models/mobilenetv2_features.onnx.data ]; then
+    rm -f /models/mobilenetv2_features.onnx.data /models/mobilenetv2_features.onnx
+    echo "Removed stale external-data MobileNetV2 ONNX — will re-copy single-file version"
+fi
+
 # Copy any models from the image's /models-builtin/ to the bind-mounted /models/
 # Only copies regular files that don't already exist. Directories (e.g.
 # insightface, person_reid) are handled by the dedicated -r blocks below.
