@@ -310,7 +310,7 @@ export default function DetectionSettings() {
     <div className="p-4 space-y-4 pb-24">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate("/settings")} className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors">
+        <button onClick={() => navigate("/cameras")} className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors">
           <ArrowLeft size={20} />
         </button>
         <div>

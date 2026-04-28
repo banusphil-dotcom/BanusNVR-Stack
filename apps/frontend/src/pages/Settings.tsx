@@ -3,13 +3,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, getToken } from "../api";
 import { useAuth } from "../hooks/useAuth";
-import { CameraInfo, AddCameraModal, EditCameraModal } from "./Cameras";
 import {
   Bell, Mail, Shield, HardDrive, Save, Key, Cpu, MemoryStick,
   Monitor, RefreshCw, Smartphone, LogOut,
   Activity, Clock, Camera, ChevronDown, ChevronRight, Zap, Leaf, Scale,
   SlidersHorizontal, RotateCcw, Server, Wifi, WifiOff,
-  Plus, Trash2, Video, Pencil, Usb, ArrowLeftRight, AlertCircle, Timer, Hash,
+  Usb, ArrowLeftRight, AlertCircle, Timer, Hash,
   Radio, Sun, Moon, Palette, ExternalLink,
 } from "lucide-react";
 
@@ -97,7 +96,6 @@ export default function Settings() {
     <div className="p-4 space-y-6 pb-24 max-w-2xl mx-auto">
       <h2 className="text-lg font-bold">Settings</h2>
       <ResourceMonitor />
-      <CameraManagement />
       <MLServerSettings />
       <RingSettings />
       <NotificationSettings />
@@ -299,109 +297,6 @@ function CoralStatus() {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/* ═══════════════════════ Camera Management ═══════════════════════ */
-
-function CameraManagement() {
-  const qc = useQueryClient();
-  const navigate = useNavigate();
-  const [expanded, setExpanded] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
-  const [editingCamera, setEditingCamera] = useState<CameraInfo | null>(null);
-
-  const { data: cameras, isLoading } = useQuery({
-    queryKey: ["cameras"],
-    queryFn: () => api.get<CameraInfo[]>("/api/cameras"),
-  });
-
-  const deleteMut = useMutation({
-    mutationFn: (id: number) => api.delete(`/api/cameras/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["cameras"] }),
-  });
-
-  return (
-    <div className="space-y-3">
-      <button onClick={() => setExpanded(!expanded)} className="flex items-center justify-between w-full">
-        <h3 className="font-semibold flex items-center gap-2">
-          <Video size={16} className="text-blue-400" /> Cameras
-          <span className="text-xs text-slate-500 font-normal">
-            {cameras?.length ?? 0} configured
-          </span>
-        </h3>
-        {expanded ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
-      </button>
-
-      {expanded && (
-        <div className="space-y-3">
-          <div className="flex justify-end">
-            <button onClick={() => setShowAdd(true)} className="btn-primary text-xs py-1.5 flex items-center gap-1.5">
-              <Plus size={14} /> Add Camera
-            </button>
-          </div>
-
-          {isLoading ? (
-            <div className="text-center py-6 text-slate-400 text-sm">Loading...</div>
-          ) : !cameras?.length ? (
-            <div className="card text-center py-8 text-slate-400">
-              <Video size={36} className="mx-auto mb-2 opacity-50" />
-              <p className="text-sm">No cameras added yet</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {cameras.map((cam) => (
-                <div key={cam.id} className="card p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Wifi size={14} className={cam.enabled ? "text-green-400" : "text-red-400"} />
-                      <span className="font-medium text-sm">{cam.name}</span>
-                      <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">{cam.camera_type}</span>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 text-[10px] text-slate-500 mb-2">
-                    <span>Rec: {cam.recording_mode}</span>
-                    <span>&middot;</span>
-                    <span>Det: {cam.detection_enabled ? "ON" : "OFF"}</span>
-                    {cam.detection_enabled && cam.detection_objects.length > 0 && (
-                      <>
-                        <span>&middot;</span>
-                        <span>{cam.detection_objects.join(", ")}</span>
-                      </>
-                    )}
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => setEditingCamera(cam)}
-                      className="btn-secondary text-[11px] py-1 px-2.5 flex items-center gap-1"
-                    >
-                      <Pencil size={12} /> Edit
-                    </button>
-                    <button
-                      onClick={() => navigate(`/cameras/${cam.id}/detection`)}
-                      className="btn-secondary text-[11px] py-1 px-2.5 flex items-center gap-1"
-                    >
-                      <SlidersHorizontal size={12} /> Detection
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Delete camera "${cam.name}"?`)) deleteMut.mutate(cam.id);
-                      }}
-                      className="btn-danger text-[11px] py-1 px-2.5 flex items-center gap-1 ml-auto"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {showAdd && <AddCameraModal onClose={() => setShowAdd(false)} />}
-      {editingCamera && <EditCameraModal camera={editingCamera} onClose={() => setEditingCamera(null)} />}
     </div>
   );
 }
