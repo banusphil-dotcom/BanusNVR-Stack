@@ -1304,22 +1304,22 @@ function AccountSettings() {
 
       {expanded && (
         <div className="card space-y-3">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <input type="password" className="input" placeholder="Current password" value={oldPassword}
               onChange={(e) => setOldPassword(e.target.value)} />
             <input type="password" className="input" placeholder="New password" value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)} />
           </div>
           {status && <p className="text-xs text-slate-400">{status}</p>}
-          <div className="flex gap-2">
+          <div className="flex flex-col sm:flex-row gap-2 w-full">
             <button
               onClick={() => changeMut.mutate({ old_password: oldPassword, new_password: newPassword })}
-              className="btn-primary text-sm flex-1"
+              className="btn-primary text-sm w-full sm:w-auto"
               disabled={!oldPassword || !newPassword || changeMut.isPending}
             >
               <Key size={14} className="inline mr-1" /> Update Password
             </button>
-            <button onClick={logout} className="btn-danger text-sm flex items-center gap-1">
+            <button onClick={logout} className="btn-danger text-sm flex items-center gap-1 w-full sm:w-auto">
               <LogOut size={14} /> Logout
             </button>
           </div>
@@ -1329,26 +1329,54 @@ function AccountSettings() {
             <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
               <Shield size={14} className="text-blue-400" /> Two-Factor Authentication (2FA)
             </h4>
-            {user?.totp_enabled ? (
-              <div className="flex items-center gap-3">
-                <span className="text-emerald-400 font-medium">Enabled</span>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {user?.totp_enabled ? (
+                <>
+                  <span className="text-emerald-400 font-medium">Enabled</span>
+                  <button
+                    onClick={disableTOTP}
+                    className="btn-danger btn-xs w-full sm:w-auto"
+                    disabled={totpBusy}
+                  >
+                    Disable 2FA
+                  </button>
+                  {totpError && <span className="text-xs text-red-400 ml-2">{totpError}</span>}
+                </>
+              ) : (
                 <button
-                  onClick={disableTOTP}
-                  className="btn-danger btn-xs"
-                  disabled={totpBusy}
+                  onClick={() => setShowTOTP(true)}
+                  className="btn-primary btn-xs w-full sm:w-auto"
                 >
-                  Disable 2FA
+                  Enable 2FA
                 </button>
-                {totpError && <span className="text-xs text-red-400 ml-2">{totpError}</span>}
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowTOTP(true)}
-                className="btn-primary btn-xs"
-              >
-                Enable 2FA
-              </button>
-            )}
+              )}
+            </div>
+          </div>
+
+          {/* Placeholder sections for other auth methods */}
+          <div className="border-t border-slate-800 pt-3 mt-3">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Shield size={14} className="text-purple-400" /> OIDC (Single Sign-On)
+            </h4>
+            <div className="text-xs text-slate-400">OIDC setup coming soon.</div>
+          </div>
+          <div className="border-t border-slate-800 pt-3 mt-3">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Shield size={14} className="text-green-400" /> WebAuthn (Passkeys)
+            </h4>
+            <div className="text-xs text-slate-400">WebAuthn setup coming soon.</div>
+          </div>
+          <div className="border-t border-slate-800 pt-3 mt-3">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Shield size={14} className="text-yellow-400" /> API Tokens
+            </h4>
+            <div className="text-xs text-slate-400">API token management coming soon.</div>
+          </div>
+          <div className="border-t border-slate-800 pt-3 mt-3">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Shield size={14} className="text-pink-400" /> Magic Links
+            </h4>
+            <div className="text-xs text-slate-400">Magic link login coming soon.</div>
           </div>
 
           {showTOTP && <TOTPSetupModal onClose={() => { setShowTOTP(false); refreshProfile(); }} />}
