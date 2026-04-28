@@ -106,7 +106,12 @@ def _build_rtsp_url(camera_type: str, conn: dict, stream_path: str) -> str:
         ring_user = conn.get("ring_rtsp_user", settings.ring_rtsp_user)
         ring_pass = conn.get("ring_rtsp_password", settings.ring_rtsp_password)
         device_id = conn.get("ring_device_id", conn.get("ring_device_name", ""))
-        return f"rtsp://{ring_user}:{ring_pass}@ring-mqtt:8554/{device_id}_live#timeout=30"
+        # URL-encode user/pass — Ring passwords commonly contain '@', '!', '#'
+        # which break RTSP URL parsing in go2rtc/ffmpeg if left raw.
+        return (
+            f"rtsp://{quote(ring_user, safe='')}:{quote(ring_pass, safe='')}"
+            f"@ring-mqtt:8554/{device_id}_live#timeout=30"
+        )
 
     if camera_type == "rtsp":
         return conn.get("rtsp_url", conn.get("url", ""))
@@ -223,7 +228,12 @@ def generate_frigate_config(cameras: list) -> dict:
         "objects": {
             "track": ["person", "cat", "dog", "car", "bird"],
             "filters": {
-                "person": {"min_area": 1500, "min_score": 0.55, "threshold": 0.72},
+                # Person threshold raised — trees, fence-posts and bushes were
+                # being confidently mis-classified as people on outdoor cameras.
+                # 0.80 cut-off keeps recall on real people while killing most
+                # static-foliage false positives. Pair with user-drawn ignore
+                # zones (Cameras → Detection settings) for repeat offenders.
+                "person": {"min_area": 2000, "min_score": 0.65, "threshold": 0.80},
                 "cat": {"min_area": 500, "min_score": 0.3, "threshold": 0.5},
                 "dog": {"min_area": 500, "min_score": 0.2, "threshold": 0.35},
                 "car": {"min_area": 2000, "min_score": 0.55, "threshold": 0.72},

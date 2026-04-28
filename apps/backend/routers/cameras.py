@@ -149,6 +149,7 @@ CAMERA_TEMPLATES = {
     "hikvision": "rtsp://{username}:{password}@{host}:{port}/{stream_path}",
     "onvif": "rtsp://{username}:{password}@{host}:{port}/{stream_path}",
     "rtsp": "{url}",
+    # Ring user/password are URL-encoded in build_source_url before format() runs
     "ring": "rtsp://{ring_rtsp_user}:{ring_rtsp_password}@ring-mqtt:8554/{ring_device_id}_live#timeout=30",
     "other": "{url}",
 }
@@ -176,6 +177,10 @@ def build_source_url(camera_type: str, config: dict) -> str:
     if camera_type == "ring":
         config.setdefault("ring_rtsp_user", settings.ring_rtsp_user)
         config.setdefault("ring_rtsp_password", settings.ring_rtsp_password)
+        # Ring passwords often contain '@', '!', '#' — URL-encode before
+        # substitution into the rtsp:// template so the URL parses correctly.
+        config["ring_rtsp_user"] = quote(config["ring_rtsp_user"], safe="")
+        config["ring_rtsp_password"] = quote(config["ring_rtsp_password"], safe="")
     config["username"] = quote(config["username"], safe="")
     config["password"] = quote(config["password"], safe="")
     if "stream_path" not in config or not config["stream_path"]:

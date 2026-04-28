@@ -327,7 +327,12 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
     };
   }, [status]);
 
-  // Fallback: snapshot via Frigate's latest.jpg, with go2rtc frame.jpeg fallback
+  // Fallback: snapshot via Frigate's latest.jpg, with go2rtc frame.jpeg fallback.
+  // Once Frigate has 404'd for a stream we remember it and skip straight to
+  // go2rtc on subsequent polls — this matters for Ring (and other on-demand)
+  // cameras that aren't in Frigate's `cameras:` section, where the Frigate
+  // request always 404s and was wasting a full HTTP round-trip every 4s.
+  const skipFrigateRef = useRef(false);
   useEffect(() => {
     const needsSnapshot =
       status === "snapshot" ||
@@ -337,18 +342,22 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
 
     let alive = true;
     const poll = async () => {
-      try {
-        // Try Frigate first (works for cameras with Frigate sections)
-        const r = await fetch(`/frigate/api/${stream}/latest.jpg?_=${Date.now()}`);
-        if (r.ok && alive) {
-          const blob = await r.blob();
-          if (blob.size > 100 && (blob.type.startsWith("image/") || blob.type === "application/octet-stream")) {
-            const url = URL.createObjectURL(blob);
-            setSnapUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
-            return;
+      if (!skipFrigateRef.current) {
+        try {
+          const r = await fetch(`/frigate/api/${stream}/latest.jpg?_=${Date.now()}`);
+          if (r.ok && alive) {
+            const blob = await r.blob();
+            if (blob.size > 100 && (blob.type.startsWith("image/") || blob.type === "application/octet-stream")) {
+              const url = URL.createObjectURL(blob);
+              setSnapUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return url; });
+              return;
+            }
+          } else if (r.status === 404) {
+            // Camera not registered with Frigate (e.g. Ring) — stop trying.
+            skipFrigateRef.current = true;
           }
-        }
-      } catch { /* Frigate unavailable — try go2rtc */ }
+        } catch { /* Frigate unavailable — try go2rtc */ }
+      }
       // Fallback to go2rtc frame.jpeg (works for Ring/on-demand cameras)
       try {
         const r2 = await fetch(`/go2rtc/api/frame.jpeg?src=${stream}&_=${Date.now()}`);
