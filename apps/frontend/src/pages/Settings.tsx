@@ -98,6 +98,7 @@ export default function Settings() {
       <h2 className="text-lg font-bold">Settings</h2>
       <ResourceMonitor />
       <CameraManagement />
+      <MLServerSettings />
       <RingSettings />
       <NotificationSettings />
       <StorageSettings />
@@ -414,8 +415,9 @@ function DetectorIndicator({ hw }: { hw: HardwareResources }) {
   const isCoral = hw.detector_type === "edgetpu" || devices.some((d) => d.toLowerCase().includes("coral"));
   const accentRing = isCoral ? "bg-teal-500/15 text-teal-300 border-teal-700/40" : "bg-blue-500/15 text-blue-300 border-blue-800/40";
   const Icon = isCoral ? Usb : Zap;
+  const [showHelp, setShowHelp] = useState(false);
   return (
-    <div className="card py-3 px-4">
+    <div className="card py-3 px-4 space-y-2">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <span className="text-xs font-medium flex items-center gap-1.5">
           <Icon size={13} className={isCoral ? "text-teal-400" : "text-blue-400"} />
@@ -431,6 +433,94 @@ function DetectorIndicator({ hw }: { hw: HardwareResources }) {
             </span>
           )}
         </div>
+      </div>
+      {!isCoral && (
+        <>
+          <button
+            onClick={() => setShowHelp((v) => !v)}
+            className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1"
+          >
+            {showHelp ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+            No Coral TPU detected — how to add one
+          </button>
+          {showHelp && (
+            <div className="text-[11px] text-slate-400 bg-slate-900/60 border border-slate-800 rounded p-2.5 space-y-1.5">
+              <p>To enable hardware-accelerated detection, plug in a Google Coral USB Accelerator <em>or</em> install a PCIe / M.2 Coral, then:</p>
+              <ol className="list-decimal list-inside space-y-0.5 text-slate-500">
+                <li>Install the EdgeTPU runtime on the host: <code className="text-slate-300">sudo apt install libedgetpu1-std</code> (USB) or <code className="text-slate-300">gasket-dkms</code> (M.2)</li>
+                <li>For USB Coral, ensure compose maps it: <code className="text-slate-300">devices: ["/dev/bus/usb:/dev/bus/usb"]</code> (already set by default)</li>
+                <li>For M.2 Coral, add <code className="text-slate-300">/dev/apex_0:/dev/apex_0</code> to the <code className="text-slate-300">frigate</code> service (it runs <code className="text-slate-300">privileged</code> so usually no edit needed)</li>
+                <li>Restart the stack: <code className="text-slate-300">docker compose restart api frigate</code></li>
+              </ol>
+              <p className="text-slate-500">Detection is automatic — the API regenerates Frigate config and picks the TPU on next start.</p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════ ML Offload Server (top-level) ══════════════ */
+
+function MLServerSettings() {
+  const qc = useQueryClient();
+  const { data: perf } = useQuery({
+    queryKey: ["performance-settings"],
+    queryFn: () => api.get<PerformanceSettings>("/api/system/performance"),
+  });
+  const mut = useMutation({
+    mutationFn: (data: PerformanceSettings) => api.put("/api/system/performance", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["performance-settings"] });
+      qc.invalidateQueries({ queryKey: ["ml-health"] });
+    },
+  });
+  const [form, setForm] = useState<{ enabled: boolean; url: string } | null>(null);
+  const enabled = form?.enabled ?? perf?.ml_offload_enabled ?? false;
+  const url = form?.url ?? perf?.ml_offload_url ?? "https://ml.banusphotos.com";
+  const dirty = form !== null && perf !== undefined && (form.enabled !== perf.ml_offload_enabled || form.url !== perf.ml_offload_url);
+
+  const save = () => {
+    if (!perf) return;
+    mut.mutate({ ...perf, ml_offload_enabled: enabled, ml_offload_url: url });
+    setForm(null);
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="font-semibold flex items-center gap-2">
+        <Server size={16} className="text-indigo-400" /> ML Offload Server
+      </h3>
+      <div className="card p-4 space-y-4">
+        <p className="text-xs text-slate-400">
+          Optional remote GPU server for heavy ML workloads (face recognition, person re-identification, deep search). Local detection still runs in Frigate — this only offloads enrichment.
+        </p>
+        <MLOffloadSection
+          enabled={enabled}
+          url={url}
+          onToggle={(v) => setForm({ enabled: v, url })}
+          onUrlChange={(v) => setForm({ enabled, url: v })}
+        />
+        {dirty && (
+          <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+            <button
+              onClick={save}
+              disabled={mut.isPending}
+              className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white flex items-center gap-1.5"
+            >
+              <Save size={12} /> Save
+            </button>
+            <button
+              onClick={() => setForm(null)}
+              className="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-xs text-slate-300"
+            >
+              Cancel
+            </button>
+            {mut.isError && <span className="text-[11px] text-red-400">Failed to save</span>}
+            {mut.isSuccess && <span className="text-[11px] text-emerald-400">Saved</span>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1053,6 +1143,19 @@ function MLOffloadSection({
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* Troubleshooting hint when offline */}
+      {enabled && !isLoading && health && !health.online && (
+        <div className="text-[11px] text-slate-400 bg-slate-900/60 border border-slate-800 rounded p-2.5 space-y-1">
+          <div className="font-medium text-amber-300">ML server unreachable. Check:</div>
+          <ul className="list-disc list-inside space-y-0.5 text-slate-500">
+            <li>The URL above is correct (include <code className="text-slate-300">https://</code> and any port)</li>
+            <li>The ml-server container is running: <code className="text-slate-300">docker compose -f docker-compose.ml.yml up -d</code></li>
+            <li>The host is reachable from this network (firewall, DNS)</li>
+            <li>Look at server logs: <code className="text-slate-300">docker logs banusnvr-ml-server</code></li>
+          </ul>
         </div>
       )}
 
