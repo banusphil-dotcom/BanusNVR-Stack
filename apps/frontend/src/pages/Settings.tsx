@@ -36,6 +36,8 @@ interface HardwareResources {
   gpu_inference_device?: string;
   coral_available: boolean;
   coral_status?: { available: boolean; active_model?: string; swap_count: number; last_swap_ms: number; yolo_input_size: number; cnn_embed_dim?: number } | null;
+  detector_type?: string | null;
+  detector_devices?: string[];
   storage_used_gb: number;
   storage_total_gb: number;
   storage_percent: number;
@@ -405,6 +407,35 @@ function CameraManagement() {
 
 /* ═══════════════════════ Resource Monitor (Task Manager Style) ═══════════════════════ */
 
+function DetectorIndicator({ hw }: { hw: HardwareResources }) {
+  const devices = hw.detector_devices && hw.detector_devices.length
+    ? hw.detector_devices
+    : [hw.gpu_available ? (hw.gpu_name || "Intel iGPU") + " (OpenVINO)" : "CPU"];
+  const isCoral = hw.detector_type === "edgetpu" || devices.some((d) => d.toLowerCase().includes("coral"));
+  const accentRing = isCoral ? "bg-teal-500/15 text-teal-300 border-teal-700/40" : "bg-blue-500/15 text-blue-300 border-blue-800/40";
+  const Icon = isCoral ? Usb : Zap;
+  return (
+    <div className="card py-3 px-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-xs font-medium flex items-center gap-1.5">
+          <Icon size={13} className={isCoral ? "text-teal-400" : "text-blue-400"} />
+          AI Detector
+        </span>
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          {devices.map((d) => (
+            <span key={d} className={`text-[10px] px-2 py-0.5 rounded-full border ${accentRing}`}>{d}</span>
+          ))}
+          {isCoral && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-700/40 font-bold">
+              ACCELERATED
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ResourceMonitor() {
   const [history, setHistory] = useState<HardwareResources[]>([]);
 
@@ -491,6 +522,9 @@ function ResourceMonitor() {
           />
         </div>
       </div>
+
+      {/* AI Detector / accelerator indicator */}
+      <DetectorIndicator hw={hw} />
 
       {/* System info line */}
       <div className="text-[10px] text-slate-600 px-1">

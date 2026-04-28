@@ -17,6 +17,63 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+def detect_coral_devices() -> dict:
+    """Probe the host for Coral Edge TPU devices.
+
+    Returns dict: {
+        "usb": bool,         # USB Coral on /sys/bus/usb (Google vendor 1a6e/18d1)
+        "pcie": list[int],   # PCIe Coral indices (M.2 / Mini PCIe), via /sys/bus/pci
+    }
+    Detection works from inside the API container without any /dev passthrough
+    — we only read /sys, which is mounted automatically by Docker. Frigate
+    runs `privileged: true` so it has direct access to the actual /dev nodes.
+    """
+    result: dict = {"usb": False, "pcie": []}
+
+    # PCIe / M.2 Coral: Google Edge TPU PCI vendor 1ac1, device 089a.
+    # Each board exposes one or more functions — we count unique BDFs.
+    try:
+        seen = set()
+        for dev_dir in Path("/sys/bus/pci/devices").iterdir():
+            vendor_file = dev_dir / "vendor"
+            device_file = dev_dir / "device"
+            if not vendor_file.exists() or not device_file.exists():
+                continue
+            try:
+                vendor = vendor_file.read_text().strip().lower()
+                device = device_file.read_text().strip().lower()
+            except (OSError, PermissionError):
+                continue
+            if vendor == "0x1ac1" and device == "0x089a":
+                seen.add(dev_dir.name)
+        # Sort by BDF for stable indices (apex_0, apex_1, ...)
+        for idx, _ in enumerate(sorted(seen)):
+            result["pcie"].append(idx)
+    except (FileNotFoundError, PermissionError):
+        pass
+
+    # USB Coral: 1a6e:089a (unprogrammed) or 18d1:9302 (Google Edge TPU)
+    try:
+        for dev_dir in Path("/sys/bus/usb/devices").iterdir():
+            vendor_file = dev_dir / "idVendor"
+            product_file = dev_dir / "idProduct"
+            if not vendor_file.exists():
+                continue
+            try:
+                vendor = vendor_file.read_text().strip().lower()
+                product = product_file.read_text().strip().lower() if product_file.exists() else ""
+            except (OSError, PermissionError):
+                continue
+            if (vendor == "1a6e" and product == "089a") or \
+               (vendor == "18d1" and product == "9302"):
+                result["usb"] = True
+                break
+    except (FileNotFoundError, PermissionError):
+        pass
+
+    return result
+
 # Path where Frigate config is mounted (shared between API and Frigate containers)
 FRIGATE_CONFIG_DIR = Path("/config/frigate")
 FRIGATE_CONFIG_PATH = FRIGATE_CONFIG_DIR / "config.yml"
@@ -85,6 +142,61 @@ def _get_stream_paths(camera_type: str, conn: dict) -> tuple[str, Optional[str]]
     return main_path, sub_path or None
 
 
+def _build_detector_block() -> dict:
+    """Pick the best Frigate detector based on detected hardware.
+
+    Returns a partial config dict with `detectors` and `model` keys.
+    Coral wins if any device is present (TPU is dramatically faster than iGPU
+    for SSD MobileNet). Otherwise we fall back to OpenVINO AUTO, which uses
+    Intel iGPU when available and CPU as a last resort.
+    """
+    coral = detect_coral_devices()
+    detectors: dict = {}
+
+    # PCIe / M.2 Coral devices first (one detector per device for parallelism)
+    for idx in coral["pcie"]:
+        device = "pci" if idx == 0 else f"pci:{idx}"
+        detectors[f"coral_pci{idx}"] = {"type": "edgetpu", "device": device}
+
+    # USB Coral
+    if coral["usb"]:
+        detectors["coral_usb"] = {"type": "edgetpu", "device": "usb"}
+
+    if detectors:
+        logger.info(
+            "Frigate detector: Coral Edge TPU (usb=%s, pcie=%s)",
+            coral["usb"], coral["pcie"],
+        )
+        # SSD MobileNet V2 EdgeTPU model is bundled in the Frigate image at
+        # /edgetpu_model.tflite — no external download required.
+        return {
+            "detectors": detectors,
+            "model": {
+                "width": 320,
+                "height": 320,
+                "input_tensor": "nhwc",
+                "input_pixel_format": "rgb",
+                "model_type": "ssd",
+                "labelmap_path": "/labelmap/coco-80.txt",
+            },
+        }
+
+    logger.info("Frigate detector: OpenVINO AUTO (no Coral detected)")
+    return {
+        "detectors": {
+            "openvino": {"type": "openvino", "device": "AUTO"},
+        },
+        "model": {
+            "width": 300,
+            "height": 300,
+            "input_tensor": "nhwc",
+            "input_pixel_format": "bgr",
+            "model_type": "ssd",
+            "labelmap_path": "/labelmap/coco-80.txt",
+        },
+    }
+
+
 def generate_frigate_config(cameras: list) -> dict:
     """Generate complete Frigate config dict from camera list.
 
@@ -99,22 +211,11 @@ def generate_frigate_config(cameras: list) -> dict:
             "stats_interval": 60,
         },
         "database": {"path": "/config/frigate.db"},
-        "detectors": {
-            "openvino": {
-                "type": "openvino",
-                "device": "AUTO",
-            },
-        },
-        # Use the SSDLite MobileNet v2 model bundled with the Frigate image
-        # (/openvino-model/ssdlite_mobilenet_v2.xml). No external download required.
-        "model": {
-            "width": 300,
-            "height": 300,
-            "input_tensor": "nhwc",
-            "input_pixel_format": "bgr",
-            "model_type": "ssd",
-            "labelmap_path": "/labelmap/coco-80.txt",
-        },
+        # Detector + model are picked at runtime based on what hardware is
+        # actually present — Coral TPU (USB or M.2) wins, otherwise OpenVINO
+        # (Intel iGPU/CPU). The bundled SSDLite MobileNet v2 model is used in
+        # both cases so no external downloads are required.
+        **_build_detector_block(),
         "ffmpeg": {
             "hwaccel_args": "preset-vaapi",
             "output_args": {"record": "preset-record-generic-audio-aac"},

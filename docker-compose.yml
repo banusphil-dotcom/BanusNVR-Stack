@@ -221,6 +221,10 @@ services:
       - ./config:/config
     devices:
       - /dev/bus/usb:/dev/bus/usb
+    # Note: /sys is mounted by Docker automatically, so the API can detect
+    # both USB and PCIe Coral devices via /sys/bus/{usb,pci} without any
+    # extra device passthrough. Frigate runs privileged: true and has direct
+    # /dev access for actually using the TPU.
     networks:
       - banusnvr_net
     healthcheck:

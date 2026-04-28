@@ -387,6 +387,8 @@ class HardwareResources(BaseModel):
     gpu_inference_device: Optional[str] = None
     coral_available: bool = False
     coral_status: Optional[dict] = None
+    detector_type: Optional[str] = None  # "edgetpu" | "openvino" | "cpu" | ...
+    detector_devices: list[str] = []      # human-readable list, e.g. ["Coral USB"]
     storage_used_gb: float
     storage_total_gb: float
     storage_percent: float

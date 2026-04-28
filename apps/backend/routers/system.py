@@ -326,6 +326,24 @@ async def get_resources(session: AsyncSession = Depends(get_session)):
     coral_available = False
     coral_status = None
     gpu_inference_device = None
+    detector_type: str | None = None      # "edgetpu" | "openvino" | "cpu" | ...
+    detector_devices: list[str] = []      # human-readable accelerator list
+
+    # First, probe the host for physical Coral devices regardless of Frigate's
+    # current state — lets the UI show "Coral detected" even before Frigate
+    # has finished loading.
+    try:
+        from services.frigate_config import detect_coral_devices
+        coral_hw = detect_coral_devices()
+        if coral_hw["usb"]:
+            coral_available = True
+            detector_devices.append("Coral USB")
+        for idx in coral_hw["pcie"]:
+            coral_available = True
+            detector_devices.append(f"Coral M.2 #{idx}")
+    except Exception:
+        pass
+
     try:
         async with httpx.AsyncClient(base_url=settings.frigate_url, timeout=5) as client:
             resp = await client.get("/api/stats")
@@ -333,11 +351,26 @@ async def get_resources(session: AsyncSession = Depends(get_session)):
                 stats = resp.json()
                 detectors = stats.get("detectors", {})
                 for name, det in detectors.items():
-                    coral_available = True
                     coral_status = det
                     gpu_inference_device = name
+                    # Detector name conventions: coral_usb, coral_pci0, openvino, ov_0...
+                    if name.startswith("coral"):
+                        detector_type = "edgetpu"
+                        coral_available = True
+                    elif name.startswith("ov") or "openvino" in name:
+                        detector_type = detector_type or "openvino"
+                    else:
+                        detector_type = detector_type or name
     except Exception:
         pass
+
+    if not detector_devices:
+        if detector_type == "openvino":
+            detector_devices.append("Intel iGPU/CPU (OpenVINO)" if gpu_available else "CPU (OpenVINO)")
+        elif gpu_available:
+            detector_devices.append(gpu_name or "Intel iGPU")
+        else:
+            detector_devices.append("CPU")
 
     return HardwareResources(
         cpu_name=cpu_name,
@@ -352,6 +385,8 @@ async def get_resources(session: AsyncSession = Depends(get_session)):
         gpu_inference_device=gpu_inference_device,
         coral_available=coral_available,
         coral_status=coral_status,
+        detector_type=detector_type,
+        detector_devices=detector_devices,
         storage_used_gb=disk["used_gb"],
         storage_total_gb=disk["total_gb"],
         storage_percent=round(storage_pct, 1),
