@@ -8,6 +8,7 @@ Auth endpoints proxy to ring-mqtt's built-in web UI API (port 55123).
 import asyncio
 import json
 import logging
+import os
 import threading
 import time as _time
 from typing import Optional
@@ -27,7 +28,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ring", tags=["ring"], dependencies=[Depends(get_current_user)])
 
-RING_MQTT_WEB = f"http://banusnas-ring-mqtt:55123"
+# Hostname/port of the ring-mqtt web UI inside the docker network.
+# Override via RING_MQTT_HOST / RING_MQTT_WEB_PORT env vars when the
+# container is renamed (e.g. banusnvr-ring-mqtt vs banusnas-ring-mqtt).
+_RING_MQTT_HOST = os.getenv("RING_MQTT_HOST", "ring-mqtt")
+_RING_MQTT_WEB_PORT = os.getenv("RING_MQTT_WEB_PORT", "55123")
+RING_MQTT_WEB = f"http://{_RING_MQTT_HOST}:{_RING_MQTT_WEB_PORT}"
 
 
 # ─────────────────────────────────────────────────────────────
