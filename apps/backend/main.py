@@ -184,6 +184,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to register camera streams at startup: %s", e)
 
+    # Regenerate Frigate config from current cameras so any detector/model
+    # changes shipped with the API image are applied without needing the user
+    # to add/edit a camera. Safe no-op if config dir isn't mounted.
+    try:
+        from services.frigate_config import deploy_frigate_config
+        from models.schemas import Camera as _Cam
+        async with async_session() as session:
+            result = await session.execute(select(_Cam).order_by(_Cam.id))
+            cams = result.scalars().all()
+            resp = await deploy_frigate_config(cams)
+            logger.info("Frigate config regenerated at startup: %s", resp.get("message"))
+    except Exception as e:
+        logger.warning("Failed to regenerate Frigate config at startup: %s", e)
+
     # Start Ring MQTT background listener for device discovery
     try:
         from routers.ring import _start_ring_listener

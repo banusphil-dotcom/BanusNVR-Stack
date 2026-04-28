@@ -84,6 +84,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # Frigate — detection, tracking, recording, embedded go2rtc
+  # Uses the SSDLite MobileNet v2 model bundled in the Frigate image
+  # (no external model download required).
   # ---------------------------------------------------------------------------
   frigate:
     image: ghcr.io/blakeblackshear/frigate:stable
@@ -92,7 +94,8 @@ services:
     privileged: true
     shm_size: "256mb"
     depends_on:
-      - mqtt
+      mqtt:
+        condition: service_started
     environment:
       <<: *common-env
       FRIGATE_MQTT_HOST: mqtt

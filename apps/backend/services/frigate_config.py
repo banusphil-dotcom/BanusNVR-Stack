@@ -103,17 +103,16 @@ def generate_frigate_config(cameras: list) -> dict:
             "openvino": {
                 "type": "openvino",
                 "device": "AUTO",
-                "model_path": "/config/yolo11s.onnx",
             },
         },
+        # Use the SSDLite MobileNet v2 model bundled with the Frigate image
+        # (/openvino-model/ssdlite_mobilenet_v2.xml). No external download required.
         "model": {
-            "path": "/config/yolo11s.onnx",
-            "width": 800,
-            "height": 800,
-            "input_tensor": "nchw",
-            "input_pixel_format": "rgb",
-            "input_dtype": "float",
-            "model_type": "yolo-generic",
+            "width": 300,
+            "height": 300,
+            "input_tensor": "nhwc",
+            "input_pixel_format": "bgr",
+            "model_type": "ssd",
             "labelmap_path": "/labelmap/coco-80.txt",
         },
         "ffmpeg": {
