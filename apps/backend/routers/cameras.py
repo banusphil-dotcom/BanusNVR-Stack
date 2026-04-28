@@ -657,6 +657,12 @@ async def scan_lan(data: _ScanLanRequest, session: AsyncSession = Depends(get_se
         elif has_rtsp:
             inferred_type = "rtsp"
 
+        # Filter out non-camera hosts (e.g. NAS, routers, PCs) — keep only devices
+        # with at least one camera-specific signal: RTSP port, vendor-specific
+        # control port, or known camera MAC OUI. HTTP-only hosts get dropped.
+        if not (has_rtsp or has_dahua or has_xmeye or camera_brand):
+            return
+
         devices.append({
             "ip": ip,
             "ports": open_ports,
@@ -818,21 +824,34 @@ async def auto_probe_devices(
 
         camera_type = _BRAND_TO_TYPE.get(dev.camera_type or "unknown", "onvif")
 
-        # Filter creds by camera_type (None = any). Try type-specific first.
-        ordered_creds = sorted(
-            cred_list,
-            key=lambda c: (c[2] != camera_type, c[2] is not None and c[2] != camera_type),
-        )
+        # Try every selected credential against this device. Order them so
+        # type-matching creds are tried first, then untyped ("any") creds, then
+        # type-mismatched ones as a last-ditch fallback. We do NOT skip on
+        # type-mismatch — brand auto-detection is unreliable (ARP table is often
+        # empty inside the container) and the user explicitly picked these creds.
+        def _cred_priority(c):
+            cred_type = c[2]
+            if cred_type == camera_type:
+                return 0          # exact type match
+            if cred_type is None:
+                return 1          # untyped / any
+            return 2              # different type — still try as fallback
 
-        last_error = "no credentials matched"
+        ordered_creds = sorted(cred_list, key=_cred_priority)
+
+        last_error = "no credentials worked"
         chosen: AutoProbeResult | None = None
         for cred_id, cred_name, cred_type, username, password in ordered_creds:
-            # Skip credentials explicitly tied to a different camera type
-            if cred_type and cred_type != camera_type:
-                continue
+            # If the credential is tied to a specific brand and the device's
+            # inferred type was the generic "onvif" fallback, probe under the
+            # credential's brand instead — its path templates are usually a
+            # superset and will still find the stream.
+            probe_type = camera_type
+            if cred_type and cred_type != camera_type and camera_type == "onvif":
+                probe_type = cred_type
             try:
                 probe = await _try_credential_against_device(
-                    dev.ip, camera_type, username, password, port=dev.port or 554
+                    dev.ip, probe_type, username, password, port=dev.port or 554
                 )
             except Exception as e:
                 last_error = str(e)
@@ -840,7 +859,7 @@ async def auto_probe_devices(
             if probe["success"]:
                 chosen = AutoProbeResult(
                     ip=dev.ip,
-                    camera_type=camera_type,
+                    camera_type=probe_type,
                     success=True,
                     credential_id=cred_id,
                     credential_name=cred_name,
