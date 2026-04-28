@@ -41,7 +41,21 @@ RING_MQTT_WEB = f"http://{_RING_MQTT_HOST}:{_RING_MQTT_WEB_PORT}"
 # ─────────────────────────────────────────────────────────────
 
 class _RingMQTTListener:
-    """Persistent MQTT subscriber that builds a Ring device registry."""
+    """Persistent MQTT subscriber that builds a Ring device registry.
+
+    Also acts as the Ring ↔ Frigate motion bridge: when ring-mqtt publishes
+    `ring/<location>/camera/<id>/motion/state = ON`, we look up the matching
+    NVR camera (by `connection_config.ring_device_id`) and publish
+    `frigate/<cam>/detect/set = ON` and `frigate/<cam>/recordings/set = ON`
+    on the same broker. After `_RING_MOTION_HOLD_SECS` of no further motion,
+    we publish `OFF` again so Frigate stops pulling the on-demand stream.
+    """
+
+    # How long to keep Frigate detect+record enabled after the last
+    # motion-on event for a given Ring camera. Long enough to capture the
+    # tail of the event but short enough that Frigate doesn't keep the
+    # stream open indefinitely (and burn Ring's per-day stream budget).
+    _RING_MOTION_HOLD_SECS = 60
 
     def __init__(self):
         self._devices: dict[str, dict] = {}
@@ -52,8 +66,18 @@ class _RingMQTTListener:
         self._last_ring_msg: float = 0.0
         self._started = False
         self._client = None
+        # Motion bridge state — populated once main loop is running
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._device_to_cam: dict[str, str] = {}   # ring_device_id → "camera_<id>"
+        self._off_tasks: dict[str, asyncio.TimerHandle] = {}  # cam_name → pending OFF call
+        self._active: set[str] = set()  # cam_names currently turned ON via bridge
 
-    def start(self):
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
+        # Capture the asyncio loop so the paho thread can schedule async DB
+        # lookups + Frigate toggles back on it. Safe to call again later —
+        # we only honour the first non-None loop.
+        if loop is not None and self._loop is None:
+            self._loop = loop
         if self._started:
             return
         self._started = True
@@ -159,9 +183,95 @@ class _RingMQTTListener:
                             dev["location"] = location
                         elif subtopic == "status":
                             dev["status"] = payload.strip()
+                        elif subtopic == "motion/state":
+                            # Bridge to Frigate. Done outside the lock to
+                            # avoid holding it while scheduling on the loop.
+                            state = payload.strip().upper()
+                            self._dispatch_motion(device_id, state)
 
         except Exception as e:
             logger.debug("MQTT message parse error: %s", e)
+
+    # ─────── Ring-motion → Frigate bridge ───────
+
+    def _dispatch_motion(self, device_id: str, state: str):
+        """Schedule motion handling on the asyncio loop (called from MQTT thread)."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._handle_motion(device_id, state), loop)
+        except Exception as e:
+            logger.debug("Could not schedule Ring motion handler: %s", e)
+
+    async def _handle_motion(self, device_id: str, state: str):
+        cam_name = self._device_to_cam.get(device_id)
+        if cam_name is None:
+            cam_name = await self._lookup_cam_name(device_id)
+            if cam_name is None:
+                # Camera with this Ring device_id isn't in our DB — ignore
+                return
+            self._device_to_cam[device_id] = cam_name
+
+        if state == "ON":
+            # Cancel any pending OFF and (re-)enable detect+record
+            pending = self._off_tasks.pop(cam_name, None)
+            if pending is not None:
+                pending.cancel()
+            if cam_name not in self._active:
+                self._publish_frigate_state(cam_name, True)
+                self._active.add(cam_name)
+                logger.info("Ring motion ON → Frigate %s detect+record enabled", cam_name)
+            # Always (re)arm the OFF timer so detection sticks for the full
+            # hold window after the *latest* motion event.
+            loop = asyncio.get_running_loop()
+            self._off_tasks[cam_name] = loop.call_later(
+                self._RING_MOTION_HOLD_SECS,
+                lambda c=cam_name: self._motion_off(c),
+            )
+        elif state == "OFF":
+            # Don't immediately turn Frigate off — let the hold timer run.
+            # Ring's motion sensor often pulses OFF even mid-event, and the
+            # interesting frames are usually the last ones.
+            pass
+
+    def _motion_off(self, cam_name: str):
+        self._off_tasks.pop(cam_name, None)
+        if cam_name in self._active:
+            self._publish_frigate_state(cam_name, False)
+            self._active.discard(cam_name)
+            logger.info("Ring motion hold expired → Frigate %s detect+record disabled", cam_name)
+
+    def _publish_frigate_state(self, cam_name: str, on: bool):
+        client = self._client
+        if client is None:
+            return
+        payload = "ON" if on else "OFF"
+        try:
+            client.publish(f"frigate/{cam_name}/detect/set", payload, qos=0, retain=False)
+            client.publish(f"frigate/{cam_name}/recordings/set", payload, qos=0, retain=False)
+        except Exception as e:
+            logger.warning("Failed to publish Frigate toggle for %s: %s", cam_name, e)
+
+    async def _lookup_cam_name(self, device_id: str) -> Optional[str]:
+        """Resolve a Ring device_id → Frigate camera name via DB lookup."""
+        try:
+            from models.database import async_session
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Camera).where(Camera.camera_type == CameraType.ring)
+                )
+                for cam in result.scalars().all():
+                    cfg = cam.connection_config or {}
+                    if cfg.get("ring_device_id") == device_id:
+                        return f"camera_{cam.id}"
+        except Exception as e:
+            logger.debug("Ring cam DB lookup failed for %s: %s", device_id, e)
+        return None
+
+    def invalidate_cam_cache(self):
+        """Drop the device→cam map (call after a Ring camera is added/removed)."""
+        self._device_to_cam.clear()
 
     def _ensure_device(self, device_id: str, location: str = "") -> dict:
         if device_id not in self._devices:
@@ -212,8 +322,16 @@ _ring_listener = _RingMQTTListener()
 
 
 def _start_ring_listener():
-    """Start the background listener (called once at app startup)."""
-    _ring_listener.start()
+    """Start the background listener (called once at app startup).
+
+    Captures the running asyncio loop so the MQTT thread can dispatch
+    motion events back into async DB lookups + Frigate toggle publishes.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    _ring_listener.start(loop=loop)
 
 
 @router.get("/devices")
@@ -298,6 +416,10 @@ async def add_ring_camera(
     session.add(camera)
     await session.commit()
     await session.refresh(camera)
+
+    # Drop the device→camera cache so the motion bridge picks up this new
+    # camera on the next motion event.
+    _ring_listener.invalidate_cam_cache()
 
     source_url = build_source_url("ring", connection_config)
     stream_name = f"camera_{camera.id}"

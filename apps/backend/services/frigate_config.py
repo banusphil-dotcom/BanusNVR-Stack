@@ -294,15 +294,22 @@ def generate_frigate_config(cameras: list) -> dict:
             if sub_url and sub_url != main_url:
                 go2rtc_streams[f"{cam_name}_sub"] = [sub_url]
 
-        # Ring cameras are on-demand — Frigate must NOT continuously pull
-        # frames or it creates a crash loop with ring-mqtt.  Keep go2rtc
-        # streams so the frontend can do on-demand live viewing.
-        if cam_type == "ring":
-            continue
-
-        # Build Frigate camera section
+        # Ring cameras are on-demand — we register them in Frigate but with
+        # detect/record DISABLED at boot. The Ring motion bridge
+        # (`services/ring_motion_bridge`) listens for Ring's MQTT motion
+        # events and toggles `frigate/<cam>/detect/set` and
+        # `frigate/<cam>/recordings/set` to ON for ~60s when motion fires,
+        # then back OFF. This avoids the crash loop you get when Frigate
+        # tries to keep an on-demand Ring stream open continuously, while
+        # still giving real Frigate detection + recorded clips per event.
         has_sub = f"{cam_name}_sub" in go2rtc_streams
         cam_section = _build_camera_section(cam, cam_name, has_sub, cam_type)
+        if cam_type == "ring":
+            cam_section.setdefault("detect", {})["enabled"] = False
+            cam_section["record"] = {"enabled": False}
+            # Be patient with the upstream — ring-mqtt takes a few seconds to
+            # negotiate the WebRTC session with Ring's cloud each time.
+            cam_section["ffmpeg"]["retry_interval"] = 60
         camera_sections[cam_name] = cam_section
 
     config["go2rtc"] = {
