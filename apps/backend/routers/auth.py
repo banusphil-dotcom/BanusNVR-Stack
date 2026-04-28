@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+
 from core.audit import audit, _client_ip
 from core.auth import (
     create_access_token,
@@ -22,6 +23,16 @@ from core.auth import (
     generate_totp_secret,
     get_totp_uri,
     verify_totp,
+)
+from core.permissions import permissions_for, user_role
+from models.database import get_session
+from models.schemas import NotificationRule, User, UserRole, UserSession
+from schemas.api_schemas import (
+    TokenRefresh,
+    TokenResponse,
+    UserLogin,
+    UserRegister,
+    UserResponse,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
