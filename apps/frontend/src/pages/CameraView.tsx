@@ -947,8 +947,21 @@ function DetectionSettingsPanel({ cameraId }: { cameraId: number }) {
     onSuccess: () => {
       setDirty(false);
       qc.invalidateQueries({ queryKey: ["detection-settings", cameraId] });
+      // Saving triggers a Frigate restart in the backend (see _sync_frigate
+      // → POST /api/restart). Detection is paused for ~15s while Frigate
+      // reloads — surface a countdown so the user knows when to start
+      // judging the new behaviour.
+      setRestartCountdown(15);
     },
   });
+
+  // Restart countdown after each save.
+  const [restartCountdown, setRestartCountdown] = useState(0);
+  useEffect(() => {
+    if (restartCountdown <= 0) return;
+    const t = setTimeout(() => setRestartCountdown((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [restartCountdown]);
 
   const handleSave = () => {
     if (!detData) return;
@@ -1233,6 +1246,13 @@ function DetectionSettingsPanel({ cameraId }: { cameraId: number }) {
           )}
         </div>
       </div>
+
+      {restartCountdown > 0 && (
+        <div className="flex items-center gap-2 text-[11px] px-2 py-1.5 rounded bg-amber-600/20 border border-amber-600/40 text-amber-200">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+          <span>Saved — Frigate is restarting, detection resumes in <span className="font-semibold">{restartCountdown}s</span></span>
+        </div>
+      )}
 
       {/* Preview snapshot with detections */}
       {preview && (
