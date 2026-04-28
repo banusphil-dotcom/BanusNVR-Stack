@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { Plus, Trash2, Video, TestTube, X, Wifi, Pencil, Search, Loader2, Router, SlidersHorizontal, Move, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Video, TestTube, X, Wifi, Pencil, Search, Loader2, Router, SlidersHorizontal, Move, Eye, EyeOff, RefreshCw, Key, CheckCircle2, XCircle } from "lucide-react";
 
 export interface PtzConfig {
   enabled: boolean;
@@ -14,6 +14,34 @@ export interface PtzConfig {
   autotrack_enabled?: boolean;
   autotrack_objects?: string[];
   autotrack_timeout?: number;
+}
+
+export interface SavedCredential {
+  id: number;
+  name: string;
+  username: string;
+  camera_type: string | null;
+  notes: string | null;
+  has_password: boolean;
+  created_at: string;
+}
+
+export interface AutoProbeResult {
+  ip: string;
+  camera_type: string;
+  success: boolean;
+  credential_id: number | null;
+  credential_name: string | null;
+  username: string | null;
+  stream_path: string | null;
+  sub_stream_path: string | null;
+  source_url: string | null;
+  snapshot: string | null;
+  width: number | null;
+  height: number | null;
+  codec: string | null;
+  suggested_name: string | null;
+  error: string | null;
 }
 
 export interface CameraInfo {
@@ -335,6 +363,7 @@ export default function Cameras() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(false);
   const [editingCamera, setEditingCamera] = useState<CameraInfo | null>(null);
 
   const { data: cameras, isLoading } = useQuery({
@@ -351,9 +380,18 @@ export default function Cameras() {
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold">Cameras</h2>
-        <button onClick={() => setShowAdd(true)} className="btn-primary text-sm py-2 flex items-center gap-1.5">
-          <Plus size={16} /> Add Camera
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowCredentials(true)}
+            className="btn-secondary text-sm py-2 flex items-center gap-1.5"
+            title="Saved camera logins"
+          >
+            <Key size={16} /> Logins
+          </button>
+          <button onClick={() => setShowAdd(true)} className="btn-primary text-sm py-2 flex items-center gap-1.5">
+            <Plus size={16} /> Add Camera
+          </button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -420,6 +458,7 @@ export default function Cameras() {
       )}
 
       {showAdd && <AddCameraModal onClose={() => setShowAdd(false)} />}
+      {showCredentials && <CredentialsModal onClose={() => setShowCredentials(false)} />}
       {editingCamera && <EditCameraModal camera={editingCamera} onClose={() => setEditingCamera(null)} />}
     </div>
   );
@@ -620,43 +659,12 @@ export function AddCameraModal({ onClose }: { onClose: () => void }) {
               </div>
               {scanError && <p className="text-xs text-red-400">{scanError}</p>}
               {scanResult && (
-                <div className="space-y-1.5">
-                  <p className="text-xs text-slate-500">
-                    Found {scanResult.devices.length} device{scanResult.devices.length !== 1 ? "s" : ""} on {scanResult.subnet}
-                  </p>
-                  {scanResult.devices.length === 0 && (
-                    <p className="text-xs text-slate-400 py-2 text-center">No cameras found. Check subnet and try again.</p>
-                  )}
-                  {scanResult.devices.map((dev) => (
-                    <button
-                      key={dev.ip}
-                      onClick={() => selectDevice(dev)}
-                      className="w-full flex items-center gap-2 p-2.5 bg-slate-800 rounded-lg text-left hover:bg-slate-700 transition-colors"
-                    >
-                      <div className={`w-8 h-8 rounded flex items-center justify-center text-xs font-bold shrink-0 ${
-                        dev.has_rtsp ? "bg-blue-600/30 text-blue-400" : "bg-slate-700 text-slate-400"
-                      }`}>
-                        {dev.has_rtsp ? "CAM" : "DEV"}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium">
-                          {dev.ip}
-                          {dev.brand && (
-                            <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-400">
-                              {brandLabels[dev.brand] || dev.brand}
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-xs text-slate-500 truncate">
-                          {dev.ports.map((p) => `${p.service} (:${p.port})`).join(", ")}
-                        </p>
-                      </div>
-                      {dev.has_rtsp && (
-                        <span className="text-xs bg-blue-900/30 text-blue-400 px-1.5 py-0.5 rounded shrink-0">RTSP</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
+                <ScanResultsPanel
+                  scanResult={scanResult}
+                  onSingleSelect={(dev) => selectDevice(dev)}
+                  brandLabels={brandLabels}
+                  onBulkAdded={onClose}
+                />
               )}
             </div>
 
@@ -692,6 +700,10 @@ export function AddCameraModal({ onClose }: { onClose: () => void }) {
               <label className="label">Camera Name</label>
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Front Door" />
             </div>
+            <CredentialPicker
+              cameraType={cameraType}
+              onApply={(c) => setConfig((cfg) => ({ ...cfg, username: c.username, password: c.password ?? "" }))}
+            />
             {typeConfig.fields.map((field) => (
               <div key={field}>
                 <label className="label">{field.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</label>
@@ -1437,6 +1449,495 @@ export function EditCameraModal({ camera, onClose }: { camera: CameraInfo; onClo
         <button onClick={handleSave} className="btn-primary w-full" disabled={updateMut.isPending}>
           {updateMut.isPending ? "Saving..." : "Save Changes"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* placeholder marker */
+
+/* ═══════════════════════ Saved Credentials (logins) ═══════════════════════ */
+
+/** Compact dropdown that lists saved credentials and applies one to the form. */
+function CredentialPicker({
+  cameraType,
+  onApply,
+}: {
+  cameraType: string;
+  onApply: (cred: { username: string; password: string | null }) => void;
+}) {
+  const { data: creds } = useQuery({
+    queryKey: ["camera-credentials"],
+    queryFn: () => api.get<SavedCredential[]>("/api/camera-credentials"),
+  });
+  const [revealedId, setRevealedId] = useState<number | null>(null);
+  const [reveal, setReveal] = useState<{ password: string } | null>(null);
+
+  if (!creds || creds.length === 0) {
+    return (
+      <div className="text-[10px] text-slate-500 -mt-1">
+        Tip: save a login under <span className="font-medium text-slate-400">Cameras → Logins</span> to reuse it across cameras.
+      </div>
+    );
+  }
+
+  // Suggest credentials matching this camera type first
+  const ranked = [...creds].sort((a, b) => {
+    const aMatch = a.camera_type === cameraType ? -1 : 0;
+    const bMatch = b.camera_type === cameraType ? -1 : 0;
+    return aMatch - bMatch;
+  });
+
+  return (
+    <div>
+      <label className="label flex items-center gap-1.5">
+        <Key size={12} className="text-blue-400" /> Use saved login
+      </label>
+      <select
+        className="input text-sm"
+        value={revealedId ?? ""}
+        onChange={async (e) => {
+          const id = e.target.value ? parseInt(e.target.value) : null;
+          setRevealedId(id);
+          if (!id) return;
+          // Fetch the password by re-using the test endpoint? No — we never expose it via list.
+          // We need a small "reveal" call. For simplicity use a dedicated apply call.
+          try {
+            const c = await api.post<{ password: string }>(`/api/camera-credentials/reveal-password`, { credential_id: id }).catch(() => null);
+            const cred = creds.find((x) => x.id === id);
+            if (!cred) return;
+            const password = c?.password ?? "";
+            setReveal({ password });
+            onApply({ username: cred.username, password });
+          } catch {
+            // ignore — fallback below
+          }
+        }}
+      >
+        <option value="">— none —</option>
+        {ranked.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name} ({c.username}){c.camera_type === cameraType ? " ★" : ""}
+          </option>
+        ))}
+      </select>
+      {revealedId && reveal && (
+        <p className="text-[10px] text-emerald-400 mt-0.5">Login applied to fields below.</p>
+      )}
+    </div>
+  );
+}
+
+/** Full CRUD modal for saved camera logins. */
+export function CredentialsModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data: creds, isLoading } = useQuery({
+    queryKey: ["camera-credentials"],
+    queryFn: () => api.get<SavedCredential[]>("/api/camera-credentials"),
+  });
+  const [editing, setEditing] = useState<SavedCredential | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/camera-credentials/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["camera-credentials"] }),
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+      <div className="bg-slate-900 rounded-t-2xl sm:rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold flex items-center gap-2">
+            <Key size={18} className="text-blue-400" /> Saved Logins
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X size={20} /></button>
+        </div>
+
+        <p className="text-xs text-slate-400">
+          Saved logins (e.g. <em>Tapo home account</em>) can be applied when adding cameras manually,
+          or batch-tested against a network scan. Passwords are stored alongside the camera DB —
+          encryption-at-rest is the operator's responsibility.
+        </p>
+
+        <button
+          onClick={() => { setAdding(true); setEditing(null); }}
+          className="btn-primary w-full text-sm flex items-center justify-center gap-2"
+        >
+          <Plus size={16} /> Add Login
+        </button>
+
+        {(adding || editing) && (
+          <CredentialForm
+            credential={editing}
+            onClose={() => { setAdding(false); setEditing(null); }}
+          />
+        )}
+
+        {isLoading ? (
+          <p className="text-xs text-slate-400 text-center py-2">Loading…</p>
+        ) : !creds?.length ? (
+          <p className="text-xs text-slate-400 text-center py-4">No saved logins yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {creds.map((c) => (
+              <div key={c.id} className="card p-3 flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{c.name}</p>
+                  <p className="text-xs text-slate-400 truncate">
+                    {c.username}
+                    {c.camera_type && <span className="ml-2 px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px]">{c.camera_type}</span>}
+                  </p>
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => { setEditing(c); setAdding(false); }}
+                    className="btn-secondary text-xs py-1 px-2 flex items-center gap-1"
+                  >
+                    <Pencil size={12} /> Edit
+                  </button>
+                  <button
+                    onClick={() => { if (confirm(`Delete login "${c.name}"?`)) deleteMut.mutate(c.id); }}
+                    className="btn-danger text-xs py-1 px-2 flex items-center gap-1"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CredentialForm({
+  credential,
+  onClose,
+}: {
+  credential: SavedCredential | null;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState(credential?.name || "");
+  const [username, setUsername] = useState(credential?.username || "");
+  const [password, setPassword] = useState("");
+  const [cameraType, setCameraType] = useState(credential?.camera_type || "");
+  const [error, setError] = useState("");
+  const isEdit = credential !== null;
+
+  const saveMut = useMutation({
+    mutationFn: (payload: any) =>
+      isEdit
+        ? api.put(`/api/camera-credentials/${credential!.id}`, payload)
+        : api.post("/api/camera-credentials", payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["camera-credentials"] });
+      onClose();
+    },
+    onError: (err: any) => setError(err.message || "Save failed"),
+  });
+
+  const handleSave = () => {
+    setError("");
+    const payload: any = { name, username, camera_type: cameraType || null };
+    if (password) payload.password = password;
+    if (!isEdit) payload.password = password;  // required on create
+    saveMut.mutate(payload);
+  };
+
+  return (
+    <div className="card bg-slate-800/40 p-3 space-y-2">
+      <p className="text-xs font-medium text-slate-300">{isEdit ? "Edit login" : "New login"}</p>
+      <input className="input text-sm" placeholder="Login name (e.g. Tapo home)" value={name} onChange={(e) => setName(e.target.value)} />
+      <input className="input text-sm" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} />
+      <input className="input text-sm" type="password" placeholder={isEdit ? "Password (leave blank to keep)" : "Password"} value={password} onChange={(e) => setPassword(e.target.value)} />
+      <select className="input text-sm" value={cameraType} onChange={(e) => setCameraType(e.target.value)}>
+        <option value="">Any camera type</option>
+        <option value="tapo">Tapo</option>
+        <option value="hikvision">Hikvision</option>
+        <option value="onvif">ONVIF / Generic</option>
+      </select>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <div className="flex gap-2">
+        <button onClick={onClose} className="btn-secondary text-xs flex-1">Cancel</button>
+        <button onClick={handleSave} disabled={saveMut.isPending || !name || !username} className="btn-primary text-xs flex-1">
+          {saveMut.isPending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════ LAN Scan Results Panel ═══════════════════════ */
+
+function ScanResultsPanel({
+  scanResult,
+  onSingleSelect,
+  brandLabels,
+  onBulkAdded,
+}: {
+  scanResult: { local_ip: string; subnet: string; devices: ScanDevice[]; scanned: number };
+  onSingleSelect: (dev: ScanDevice) => void;
+  brandLabels: Record<string, string>;
+  onBulkAdded: () => void;
+}) {
+  const qc = useQueryClient();
+  const { data: creds } = useQuery({
+    queryKey: ["camera-credentials"],
+    queryFn: () => api.get<SavedCredential[]>("/api/camera-credentials"),
+  });
+  const [selectedCredIds, setSelectedCredIds] = useState<Set<number>>(new Set());
+  const [probing, setProbing] = useState(false);
+  const [probeResults, setProbeResults] = useState<AutoProbeResult[] | null>(null);
+  const [selectedToAdd, setSelectedToAdd] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+
+  // RTSP devices only — others have no usable stream
+  const rtspDevices = scanResult.devices.filter((d) => d.has_rtsp);
+  const nonRtsp = scanResult.devices.filter((d) => !d.has_rtsp);
+
+  const toggleCred = (id: number) => {
+    setSelectedCredIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const runAutoProbe = async () => {
+    if (selectedCredIds.size === 0) {
+      setBulkError("Select at least one saved login first");
+      return;
+    }
+    setBulkError("");
+    setProbing(true);
+    setProbeResults(null);
+    try {
+      const results = await api.post<AutoProbeResult[]>("/api/cameras/scan-lan/auto-probe", {
+        devices: rtspDevices.map((d) => ({
+          ip: d.ip,
+          camera_type: d.brand || d.inferred_type,
+          port: d.ports.find((p) => p.port === 554)?.port || 554,
+        })),
+        credential_ids: [...selectedCredIds],
+      });
+      setProbeResults(results);
+      // Auto-select all successful probes for adding
+      setSelectedToAdd(new Set(results.filter((r) => r.success).map((r) => r.ip)));
+    } catch (err: any) {
+      setBulkError(err.message || "Probe failed");
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const toggleAdd = (ip: string) => {
+    setSelectedToAdd((prev) => {
+      const next = new Set(prev);
+      if (next.has(ip)) next.delete(ip);
+      else next.add(ip);
+      return next;
+    });
+  };
+
+  const handleBulkAdd = async () => {
+    if (!probeResults) return;
+    const toAdd = probeResults.filter((r) => r.success && selectedToAdd.has(r.ip));
+    if (toAdd.length === 0) return;
+    setAdding(true);
+    setBulkError("");
+    try {
+      await api.post("/api/cameras/bulk-add", {
+        cameras: toAdd.map((r) => ({
+          name: r.suggested_name || `Camera ${r.ip}`,
+          camera_type: r.camera_type,
+          credential_id: r.credential_id,
+          connection_config: {
+            ip: r.ip,
+            stream_path: r.stream_path,
+            sub_stream_path: r.sub_stream_path,
+            // username/password resolved server-side from credential_id
+          },
+          recording_mode: "motion",
+          detection_enabled: true,
+          detection_objects: ["person", "cat", "dog", "car"],
+          detection_confidence: 0.5,
+        })),
+      });
+      qc.invalidateQueries({ queryKey: ["cameras"] });
+      onBulkAdded();
+    } catch (err: any) {
+      setBulkError(err.message || "Bulk-add failed");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        Found {scanResult.devices.length} device{scanResult.devices.length !== 1 ? "s" : ""} on {scanResult.subnet}
+        {rtspDevices.length > 0 && ` — ${rtspDevices.length} with RTSP`}
+      </p>
+
+      {scanResult.devices.length === 0 && (
+        <p className="text-xs text-slate-400 py-2 text-center">No devices found. Check subnet and try again.</p>
+      )}
+
+      {/* Bulk auto-probe section — only when there are RTSP candidates */}
+      {rtspDevices.length > 0 && !probeResults && (
+        <div className="card bg-slate-800/40 p-3 space-y-2 border border-blue-700/30">
+          <p className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+            <Key size={12} className="text-blue-400" />
+            Auto-test all {rtspDevices.length} cameras with saved logins
+          </p>
+          {!creds || creds.length === 0 ? (
+            <p className="text-[11px] text-amber-300">
+              No saved logins yet — open <strong>Cameras → Logins</strong> to add one, then re-scan.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {creds.map((c) => {
+                  const sel = selectedCredIds.has(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => toggleCred(c.id)}
+                      className={`px-2 py-1 rounded-full text-[11px] transition-colors ${
+                        sel ? "bg-blue-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                      }`}
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                onClick={runAutoProbe}
+                disabled={probing || selectedCredIds.size === 0}
+                className="btn-primary text-sm w-full flex items-center justify-center gap-1.5"
+              >
+                {probing ? <><Loader2 size={14} className="animate-spin" /> Testing {rtspDevices.length} cameras…</> : <><TestTube size={14} /> Test & discover streams</>}
+              </button>
+            </>
+          )}
+          {bulkError && <p className="text-xs text-red-400">{bulkError}</p>}
+        </div>
+      )}
+
+      {/* Probe results */}
+      {probeResults && (
+        <div className="card bg-slate-800/40 p-3 space-y-3 border border-emerald-700/30">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-slate-200">
+              {probeResults.filter((r) => r.success).length} of {probeResults.length} cameras authenticated
+            </p>
+            <button
+              onClick={() => { setProbeResults(null); setSelectedToAdd(new Set()); }}
+              className="text-[10px] text-slate-400 hover:text-slate-200 flex items-center gap-1"
+            >
+              <RefreshCw size={11} /> Retry
+            </button>
+          </div>
+          <div className="space-y-2">
+            {probeResults.map((r) => (
+              <div
+                key={r.ip}
+                className={`rounded-lg border p-2 flex items-center gap-2 transition-colors ${
+                  r.success
+                    ? selectedToAdd.has(r.ip)
+                      ? "border-emerald-500 bg-emerald-900/20"
+                      : "border-emerald-800/50 bg-slate-800/50"
+                    : "border-red-800/50 bg-red-950/20"
+                }`}
+              >
+                {r.success ? (
+                  <input
+                    type="checkbox"
+                    checked={selectedToAdd.has(r.ip)}
+                    onChange={() => toggleAdd(r.ip)}
+                    className="w-4 h-4 accent-emerald-500 shrink-0"
+                  />
+                ) : (
+                  <XCircle size={16} className="text-red-400 shrink-0" />
+                )}
+                {r.snapshot ? (
+                  <img
+                    src={`data:image/jpeg;base64,${r.snapshot}`}
+                    alt={r.ip}
+                    className="w-14 h-10 object-cover rounded shrink-0"
+                  />
+                ) : (
+                  <div className="w-14 h-10 bg-slate-800 rounded flex items-center justify-center shrink-0">
+                    <Video size={14} className="text-slate-600" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium flex items-center gap-1.5">
+                    {r.ip}
+                    {r.success && <CheckCircle2 size={11} className="text-emerald-400" />}
+                  </p>
+                  <p className="text-[10px] text-slate-400 truncate">
+                    {r.success
+                      ? `${r.camera_type} · ${r.credential_name} · ${r.width}×${r.height} · ${r.stream_path}${r.sub_stream_path && r.sub_stream_path !== r.stream_path ? ` + ${r.sub_stream_path}` : ""}`
+                      : r.error || "no working credentials"}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+          {probeResults.some((r) => r.success) && (
+            <button
+              onClick={handleBulkAdd}
+              disabled={adding || selectedToAdd.size === 0}
+              className="btn-primary text-sm w-full flex items-center justify-center gap-1.5"
+            >
+              {adding ? <><Loader2 size={14} className="animate-spin" /> Adding…</> : <><Plus size={14} /> Add {selectedToAdd.size} camera{selectedToAdd.size !== 1 ? "s" : ""}</>}
+            </button>
+          )}
+          {bulkError && <p className="text-xs text-red-400">{bulkError}</p>}
+          <p className="text-[10px] text-slate-500">
+            Cameras are added with sensible defaults. Use the <em>Edit</em> button afterwards to tweak names, recording mode, detection, etc.
+          </p>
+        </div>
+      )}
+
+      {/* Per-device list (manual selection) — shown alongside auto-probe */}
+      <div className="space-y-1.5">
+        <p className="text-[11px] text-slate-500 uppercase tracking-wide">All devices</p>
+        {[...rtspDevices, ...nonRtsp].map((dev) => (
+          <button
+            key={dev.ip}
+            onClick={() => onSingleSelect(dev)}
+            className="w-full flex items-center gap-2 p-2 bg-slate-800 rounded-lg text-left hover:bg-slate-700 transition-colors"
+          >
+            <div className={`w-7 h-7 rounded flex items-center justify-center text-[10px] font-bold shrink-0 ${
+              dev.has_rtsp ? "bg-blue-600/30 text-blue-400" : "bg-slate-700 text-slate-400"
+            }`}>
+              {dev.has_rtsp ? "CAM" : "DEV"}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium">
+                {dev.ip}
+                {dev.brand && (
+                  <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-400">
+                    {brandLabels[dev.brand] || dev.brand}
+                  </span>
+                )}
+              </p>
+              <p className="text-[10px] text-slate-500 truncate">
+                {dev.ports.map((p) => `${p.service} (:${p.port})`).join(", ")}
+              </p>
+            </div>
+            {dev.has_rtsp && (
+              <span className="text-[10px] bg-blue-900/30 text-blue-400 px-1.5 py-0.5 rounded shrink-0">RTSP</span>
+            )}
+          </button>
+        ))}
       </div>
     </div>
   );

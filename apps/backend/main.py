@@ -23,7 +23,7 @@ from services.storage_manager import storage_manager
 from services.notification_engine import notification_engine
 from services.daily_summary import daily_summary_service
 
-from routers import auth, cameras, events, recordings, training, search, notifications, system
+from routers import auth, cameras, events, recordings, training, search, notifications, system, credentials
 from routers import summary as summary_router
 from routers import ring as ring_router
 
@@ -233,6 +233,7 @@ app.include_router(notifications.router)
 app.include_router(system.router)
 app.include_router(summary_router.router)
 app.include_router(ring_router.router)
+app.include_router(credentials.router)
 
 
 @app.get("/api/health")

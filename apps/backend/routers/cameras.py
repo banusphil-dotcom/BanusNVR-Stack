@@ -19,8 +19,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth import get_current_user
 from core.config import settings
 from models.database import get_session
-from models.schemas import Camera, CameraType, RecordingMode, User
-from schemas.api_schemas import CameraCreate, CameraResponse, CameraStatusResponse, CameraUpdate
+from models.schemas import Camera, CameraCredential, CameraType, RecordingMode, User
+from schemas.api_schemas import (
+    AutoProbeRequest,
+    AutoProbeResult,
+    BulkCameraAdd,
+    CameraCreate,
+    CameraResponse,
+    CameraStatusResponse,
+    CameraUpdate,
+)
 from services.stream_manager import stream_manager
 
 logger = logging.getLogger(__name__)
@@ -235,10 +243,11 @@ async def get_camera(camera_id: int, session: AsyncSession = Depends(get_session
 
 @router.post("", response_model=CameraResponse, status_code=status.HTTP_201_CREATED)
 async def add_camera(data: CameraCreate, session: AsyncSession = Depends(get_session)):
+    connection_config = await _merge_credential(session, dict(data.connection_config), data.credential_id)
     camera = Camera(
         name=data.name,
         camera_type=CameraType(data.camera_type),
-        connection_config=data.connection_config,
+        connection_config=connection_config,
         recording_mode=RecordingMode(data.recording_mode),
         detection_enabled=data.detection_enabled,
         detection_objects=data.detection_objects,
@@ -253,7 +262,7 @@ async def add_camera(data: CameraCreate, session: AsyncSession = Depends(get_ses
     await session.refresh(camera)
 
     # Register stream in go2rtc (non-fatal — camera is already saved)
-    source_url = build_source_url(data.camera_type, data.connection_config)
+    source_url = build_source_url(data.camera_type, connection_config)
     stream_name = f"camera_{camera.id}"
     try:
         await stream_manager.add_stream(stream_name, source_url)
@@ -264,6 +273,25 @@ async def add_camera(data: CameraCreate, session: AsyncSession = Depends(get_ses
     await _sync_frigate(session)
 
     return camera
+
+
+async def _merge_credential(session: AsyncSession, config: dict, credential_id: int | None) -> dict:
+    """If credential_id is provided, merge its username/password into config.
+
+    Explicit username/password already in config take precedence (so users can
+    override on a per-camera basis).
+    """
+    if not credential_id:
+        return config
+    result = await session.execute(select(CameraCredential).where(CameraCredential.id == credential_id))
+    cred = result.scalar_one_or_none()
+    if not cred:
+        raise HTTPException(status_code=404, detail=f"Credential {credential_id} not found")
+    if not config.get("username"):
+        config["username"] = cred.username
+    if not config.get("password"):
+        config["password"] = cred.password
+    return config
 
 
 class _ConnectionTestRequest(BaseModel):
@@ -654,6 +682,248 @@ async def scan_lan(data: _ScanLanRequest, session: AsyncSession = Depends(get_se
         "devices": devices,
         "scanned": len(ips),
     }
+
+
+# Brand / inferred-type → known camera_type used for path templates
+_BRAND_TO_TYPE = {
+    "tapo": "tapo",
+    "hikvision": "hikvision",
+    "dahua": "onvif",
+    "reolink": "onvif",
+    "amcrest": "onvif",
+    "axis": "onvif",
+    "uniview": "onvif",
+    "ip_camera": "onvif",
+    "rtsp": "onvif",
+    "xmeye": "onvif",
+    "unknown": "onvif",
+}
+
+
+async def _try_credential_against_device(
+    ip: str,
+    camera_type: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 554,
+    per_path_timeout: float = 6.0,
+) -> dict:
+    """Probe known stream paths for `camera_type` with one (user, pass) combo.
+
+    Returns {success, stream_path, source_url, snapshot, width, height, codec, error}.
+    Stops at first working path, then probes ALL remaining paths in parallel
+    (capped) to find a smaller sub-stream for detection.
+    """
+    paths = PROBE_SCAN_PATHS.get(camera_type, [f"stream{i}" for i in range(1, 5)])
+    base_config = {
+        "ip": ip, "host": ip,
+        "username": username, "password": password,
+        "port": str(port),
+    }
+
+    # Probe all paths concurrently with a small semaphore (cameras choke on
+    # too many simultaneous RTSP sessions). We use shorter timeout than the
+    # interactive probe-streams endpoint so a 24-host scan stays fast.
+    sem = asyncio.Semaphore(2)
+
+    async def _probe_one(path: str):
+        async with sem:
+            cfg = dict(base_config)
+            cfg["stream_path"] = path
+            url = build_source_url(camera_type, cfg)
+            res = await _probe_with_transport(url, "tcp", timeout=per_path_timeout)
+            res["path"] = path
+            res["url"] = url
+            return res
+
+    results = await asyncio.gather(*[_probe_one(p) for p in paths], return_exceptions=True)
+    valid = []
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        if r.get("available") and r.get("snapshot"):
+            valid.append(r)
+
+    if not valid:
+        return {"success": False, "error": "no path returned a frame"}
+
+    # Sort by resolution descending — biggest is "record", smallest is "detect"
+    valid.sort(key=lambda r: (r.get("width") or 0) * (r.get("height") or 0), reverse=True)
+    main = valid[0]
+    sub = valid[-1] if len(valid) > 1 else valid[0]
+    return {
+        "success": True,
+        "stream_path": main["path"],
+        "sub_stream_path": sub["path"],
+        "source_url": main["url"],
+        "snapshot": main["snapshot"],
+        "width": main.get("width"),
+        "height": main.get("height"),
+        "codec": main.get("codec"),
+    }
+
+
+@router.post("/scan-lan/auto-probe", response_model=list[AutoProbeResult])
+async def auto_probe_devices(
+    data: AutoProbeRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Try saved (and optional ad-hoc) credentials against scanned devices.
+
+    For each device, tests every credential whose `camera_type` matches (or has
+    no type set, meaning "any"). Returns the first credential that produces a
+    decodable RTSP frame, plus the discovered main + sub stream paths and a
+    base64 snapshot — ready to be pasted into a bulk-add call.
+    """
+    # Load saved credentials
+    saved: list[CameraCredential] = []
+    if data.credential_ids:
+        result = await session.execute(
+            select(CameraCredential).where(CameraCredential.id.in_(data.credential_ids))
+        )
+        saved = list(result.scalars().all())
+
+    # Build the list of (id|None, name, camera_type|None, username, password) tuples to try
+    cred_list: list[tuple[int | None, str, str | None, str, str]] = [
+        (c.id, c.name, c.camera_type, c.username, c.password) for c in saved
+    ]
+    for ec in data.extra_credentials:
+        cred_list.append((None, ec.name, ec.camera_type, ec.username, ec.password or ""))
+
+    if not cred_list:
+        raise HTTPException(status_code=400, detail="No credentials provided")
+
+    # Existing camera IPs — skip duplicates
+    existing_result = await session.execute(select(Camera))
+    existing_ips = set()
+    for cam in existing_result.scalars().all():
+        ip = (cam.connection_config or {}).get("ip") or (cam.connection_config or {}).get("host")
+        if ip:
+            existing_ips.add(ip)
+
+    results: list[AutoProbeResult] = []
+
+    # Process devices sequentially (each one already probes paths in parallel,
+    # and trying multiple devices at once would overload the LAN).
+    for dev in data.devices:
+        if dev.ip in existing_ips:
+            results.append(AutoProbeResult(
+                ip=dev.ip,
+                camera_type=dev.camera_type or "unknown",
+                success=False,
+                error="already added",
+            ))
+            continue
+
+        camera_type = _BRAND_TO_TYPE.get(dev.camera_type or "unknown", "onvif")
+
+        # Filter creds by camera_type (None = any). Try type-specific first.
+        ordered_creds = sorted(
+            cred_list,
+            key=lambda c: (c[2] != camera_type, c[2] is not None and c[2] != camera_type),
+        )
+
+        last_error = "no credentials matched"
+        chosen: AutoProbeResult | None = None
+        for cred_id, cred_name, cred_type, username, password in ordered_creds:
+            # Skip credentials explicitly tied to a different camera type
+            if cred_type and cred_type != camera_type:
+                continue
+            try:
+                probe = await _try_credential_against_device(
+                    dev.ip, camera_type, username, password, port=dev.port or 554
+                )
+            except Exception as e:
+                last_error = str(e)
+                continue
+            if probe["success"]:
+                chosen = AutoProbeResult(
+                    ip=dev.ip,
+                    camera_type=camera_type,
+                    success=True,
+                    credential_id=cred_id,
+                    credential_name=cred_name,
+                    username=username,
+                    stream_path=probe["stream_path"],
+                    sub_stream_path=probe["sub_stream_path"],
+                    source_url=probe["source_url"],
+                    snapshot=base64.b64encode(probe["snapshot"]).decode() if probe.get("snapshot") else None,
+                    width=probe.get("width"),
+                    height=probe.get("height"),
+                    codec=probe.get("codec"),
+                    suggested_name=f"Camera {dev.ip}",
+                )
+                break
+            last_error = probe.get("error") or last_error
+
+        if not chosen:
+            chosen = AutoProbeResult(
+                ip=dev.ip,
+                camera_type=camera_type,
+                success=False,
+                error=last_error,
+            )
+        results.append(chosen)
+
+    return results
+
+
+@router.post("/bulk-add", response_model=list[CameraResponse], status_code=status.HTTP_201_CREATED)
+async def bulk_add_cameras(
+    data: BulkCameraAdd,
+    session: AsyncSession = Depends(get_session),
+):
+    """Create many cameras at once (e.g. from auto-probe results).
+
+    Frigate config is synced once at the end (instead of after each camera).
+    Per-camera failures are collected — partial success is allowed.
+    """
+    if not data.cameras:
+        return []
+
+    created: list[Camera] = []
+    failures: list[dict] = []
+
+    for cam_data in data.cameras:
+        try:
+            connection_config = await _merge_credential(session, dict(cam_data.connection_config), cam_data.credential_id)
+            camera = Camera(
+                name=cam_data.name,
+                camera_type=CameraType(cam_data.camera_type),
+                connection_config=connection_config,
+                recording_mode=RecordingMode(cam_data.recording_mode),
+                detection_enabled=cam_data.detection_enabled,
+                detection_objects=cam_data.detection_objects,
+                detection_confidence=cam_data.detection_confidence,
+                detection_settings=cam_data.detection_settings,
+                ptz_mode=cam_data.ptz_mode,
+                ptz_config=cam_data.ptz_config,
+                zones=cam_data.zones,
+            )
+            session.add(camera)
+            await session.commit()
+            await session.refresh(camera)
+            created.append(camera)
+
+            # Register go2rtc stream
+            source_url = build_source_url(cam_data.camera_type, connection_config)
+            try:
+                await stream_manager.add_stream(f"camera_{camera.id}", source_url)
+            except Exception as e:
+                logger.warning("Failed to register stream for camera %s: %s", camera.id, e)
+        except Exception as e:
+            await session.rollback()
+            logger.warning("bulk-add: failed to create camera %s: %s", cam_data.name, e)
+            failures.append({"name": cam_data.name, "error": str(e)})
+
+    if created:
+        await _sync_frigate(session)
+
+    if failures and not created:
+        raise HTTPException(status_code=400, detail={"failures": failures})
+
+    return created
 
 
 @router.put("/{camera_id}", response_model=CameraResponse)

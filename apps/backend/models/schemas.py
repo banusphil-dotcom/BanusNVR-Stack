@@ -98,6 +98,24 @@ class Camera(Base):
     events: Mapped[list["Event"]] = relationship(back_populates="camera", cascade="all, delete-orphan")
 
 
+class CameraCredential(Base):
+    """Reusable camera login (username/password) that can be applied to many cameras.
+
+    Stored in plaintext (same trust level as `Camera.connection_config`, which is
+    already plaintext credentials per camera). Encryption-at-rest is the
+    operator's responsibility (volume / DB level).
+    """
+    __tablename__ = "camera_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    camera_type: Mapped[str | None] = mapped_column(String(50), nullable=True)  # tapo / hikvision / onvif / ... or None = any
+    username: Mapped[str] = mapped_column(String(200), nullable=False)
+    password: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class NamedObject(Base):
     __tablename__ = "named_objects"
 

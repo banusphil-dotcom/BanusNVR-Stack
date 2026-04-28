@@ -48,6 +48,7 @@ class CameraCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     camera_type: str  # tapo, ring, hikvision, onvif, rtsp, other
     connection_config: dict = Field(default_factory=dict)
+    credential_id: Optional[int] = None  # Apply saved username/password
     recording_mode: str = "motion"
     detection_enabled: bool = True
     detection_objects: list[str] = Field(default_factory=lambda: ["person", "cat", "dog", "car"])
@@ -97,6 +98,74 @@ class CameraStatusResponse(CameraResponse):
     is_recording: bool = False
     is_detecting: bool = False
     last_snapshot_url: Optional[str] = None
+
+
+# --- Camera Credentials (saved logins reusable across cameras) ---
+
+
+class CredentialCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(default="", max_length=500)
+    camera_type: Optional[str] = None  # If set, suggested for matching camera types only
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class CredentialUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    username: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    password: Optional[str] = Field(default=None, max_length=500)
+    camera_type: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class CredentialResponse(BaseModel):
+    id: int
+    name: str
+    username: str
+    camera_type: Optional[str] = None
+    notes: Optional[str] = None
+    has_password: bool = True
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Bulk camera-add (used by LAN scan auto-probe results) ---
+
+
+class BulkCameraAdd(BaseModel):
+    cameras: list[CameraCreate]
+
+
+class AutoProbeDevice(BaseModel):
+    ip: str
+    camera_type: Optional[str] = None  # If unknown, all credential types are tried
+    port: Optional[int] = 554
+
+
+class AutoProbeRequest(BaseModel):
+    devices: list[AutoProbeDevice]
+    credential_ids: list[int] = Field(default_factory=list)
+    extra_credentials: list[CredentialCreate] = Field(default_factory=list)  # ad-hoc creds (not saved)
+
+
+class AutoProbeResult(BaseModel):
+    ip: str
+    camera_type: str
+    success: bool
+    credential_id: Optional[int] = None
+    credential_name: Optional[str] = None
+    username: Optional[str] = None
+    stream_path: Optional[str] = None
+    sub_stream_path: Optional[str] = None
+    source_url: Optional[str] = None
+    snapshot: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    codec: Optional[str] = None
+    suggested_name: Optional[str] = None
+    error: Optional[str] = None
 
 
 # --- Events ---
