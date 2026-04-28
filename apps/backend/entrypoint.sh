@@ -5,12 +5,15 @@
 set -e
 
 # Copy any models from the image's /models-builtin/ to the bind-mounted /models/
-# Only copies files that don't already exist (won't overwrite user-updated models)
+# Only copies regular files that don't already exist. Directories (e.g.
+# insightface, person_reid) are handled by the dedicated -r blocks below.
 if [ -d /models-builtin ]; then
     for src in /models-builtin/*; do
+        # Skip directories — handled separately below with `cp -r`.
+        [ -f "$src" ] || continue
         fname=$(basename "$src")
         dest="/models/$fname"
-        if [ ! -f "$dest" ] || [ "$(stat -c%s "$src" 2>/dev/null || echo 0)" -gt 100 ] && [ "$(stat -c%s "$dest" 2>/dev/null || echo 0)" -lt 100 ]; then
+        if [ ! -f "$dest" ] || { [ "$(stat -c%s "$src" 2>/dev/null || echo 0)" -gt 100 ] && [ "$(stat -c%s "$dest" 2>/dev/null || echo 0)" -lt 100 ]; }; then
             cp "$src" "$dest"
             echo "Copied built-in model: $fname → /models/"
         fi
