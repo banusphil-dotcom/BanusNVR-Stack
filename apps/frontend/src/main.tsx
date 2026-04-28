@@ -44,6 +44,21 @@ if ("serviceWorker" in navigator) {
       // Check for updates every 60s
       setInterval(() => reg.update(), 60_000);
     });
+    // Auto-reload the page once the new SW takes control so users
+    // immediately see UI changes after a deploy (no manual hard-refresh).
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
+    // Also reload when the active SW signals it has updated.
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data?.type === "SW_UPDATED" && !reloaded) {
+        reloaded = true;
+        window.location.reload();
+      }
+    });
   });
 }
 
