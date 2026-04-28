@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+
 from core.audit import audit, _client_ip
 from core.auth import (
     create_access_token,
@@ -22,6 +23,8 @@ from core.auth import (
     get_totp_uri,
     verify_totp,
 )
+
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 # ----- TOTP 2FA endpoints -------------------------------------------------
 
 class TOTPSetupResponse(BaseModel):
