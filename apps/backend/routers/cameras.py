@@ -732,15 +732,41 @@ async def test_camera(camera_id: int, session: AsyncSession = Depends(get_sessio
     return {"success": ok, "source_url": source_url}
 
 
+# Short-lived cache so high-frequency /tracks polling from multiple clients
+# (or multiple cameras open) doesn't hammer the Frigate API. ~200ms is well
+# below human perception but coalesces bursts of requests into one upstream call.
+_tracks_cache: dict = {"ts": 0.0, "events": []}
+_tracks_cache_lock = asyncio.Lock()
+_TRACKS_CACHE_TTL = 0.2  # seconds
+
+
+async def _get_cached_active_events():
+    from services.frigate_bridge import frigate_bridge
+    import time as _time
+    now = _time.time()
+    if now - _tracks_cache["ts"] < _TRACKS_CACHE_TTL:
+        return _tracks_cache["events"]
+    async with _tracks_cache_lock:
+        # Re-check inside the lock in case another coroutine just refreshed.
+        now = _time.time()
+        if now - _tracks_cache["ts"] < _TRACKS_CACHE_TTL:
+            return _tracks_cache["events"]
+        events = await frigate_bridge.get_active_frigate_events()
+        _tracks_cache["events"] = events
+        _tracks_cache["ts"] = now
+        return events
+
+
 @router.get("/{camera_id}/tracks")
 async def get_active_tracks(camera_id: int):
     """Return current tracked objects from Frigate in-progress events.
 
     bbox values are normalized 0-1 [x1, y1, x2, y2].
+    Results are cached briefly (~200ms) to allow ~4 Hz polling without
+    overloading Frigate.
     """
-    from services.frigate_bridge import frigate_bridge
     try:
-        events = await frigate_bridge.get_active_frigate_events()
+        events = await _get_cached_active_events()
         camera_name = f"camera_{camera_id}"
         result = {}
         for ev in events:

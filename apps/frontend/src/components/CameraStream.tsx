@@ -15,6 +15,7 @@ interface TrackedObject {
   confidence: number;
   bbox: [number, number, number, number];
   named_object_name?: string;
+  received_at?: number;  // client-side timestamp (ms) — used to suppress stale boxes
 }
 
 type StreamStatus = "connecting" | "live" | "snapshot" | "error";
@@ -368,37 +369,60 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
     };
   }, [stream, status, retryKey, liveReady]);
 
-  // Tracking overlay: poll active tracks and draw boxes on canvas
+  // Tracking overlay: poll active tracks and draw boxes on canvas.
+  // We poll fast (~250ms) when something is being tracked so the overlay
+  // stays close to where the moving subject actually is on screen. The
+  // backend caches /tracks for 200ms so this rate is safe.
   const hasTracksRef = useRef(false);
   useEffect(() => { hasTracksRef.current = Object.keys(tracks).length > 0; }, [tracks]);
 
   useEffect(() => {
     if (!showOverlay || status !== "live") return;
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
         const data = await api.get<Record<string, TrackedObject>>(`/api/cameras/${cameraId}/tracks`);
-        if (alive) setTracks(data);
+        if (!alive) return;
+        const now = performance.now();
+        // Stamp every track with the current client time so the draw loop
+        // can fade or hide stale boxes (avoids drawing the box where the
+        // person *was* a second ago — the main cause of the "box is to the
+        // side of the person" bug).
+        const stamped: Record<string, TrackedObject> = {};
+        for (const [k, v] of Object.entries(data)) {
+          stamped[k] = { ...v, received_at: now };
+        }
+        setTracks(stamped);
       } catch { /* ignore */ }
+      if (alive) {
+        timer = setTimeout(poll, hasTracksRef.current ? 250 : 1500);
+      }
     };
     poll();
-    const iv = setInterval(poll, hasTracksRef.current ? 1500 : 3000);
-    return () => { alive = false; clearInterval(iv); };
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
   }, [showOverlay, status, cameraId]);
 
-  // Draw bounding boxes on canvas
+  // Draw bounding boxes on canvas using requestAnimationFrame so the overlay
+  // is repainted on every video frame instead of only every 500 ms (which
+  // visibly lagged behind the moving subject).
   useEffect(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video || !showOverlay) return;
 
+    let raf = 0;
+
     const draw = () => {
       const rect = video.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+      if (canvas.width !== Math.round(rect.width)) canvas.width = rect.width;
+      if (canvas.height !== Math.round(rect.height)) canvas.height = rect.height;
 
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      if (!ctx) { raf = requestAnimationFrame(draw); return; }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // Video natural dimensions
@@ -410,28 +434,33 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
       const elemAspect = rect.width / rect.height;
       let renderW: number, renderH: number, offsetX: number, offsetY: number;
       if (videoAspect > elemAspect) {
-        // Video wider than container → black bars top/bottom
         renderW = rect.width;
         renderH = rect.width / videoAspect;
         offsetX = 0;
         offsetY = (rect.height - renderH) / 2;
       } else {
-        // Video taller than container → black bars left/right
         renderH = rect.height;
         renderW = rect.height * videoAspect;
         offsetX = (rect.width - renderW) / 2;
         offsetY = 0;
       }
 
-      const sx = renderW / vw;
-      const sy = renderH / vh;
-
       const COLORS: Record<string, string> = {
         person: "#22c55e", cat: "#f97316", dog: "#f97316", bird: "#f97316",
         car: "#3b82f6", truck: "#3b82f6", bus: "#3b82f6", motorcycle: "#3b82f6",
       };
 
+      const now = performance.now();
+      const STALE_HIDE_MS = 2000;   // drop the box entirely after 2s of no update
+      const STALE_FADE_MS = 700;    // start fading after 0.7s
+
       for (const [, t] of Object.entries(tracks)) {
+        const age = t.received_at ? now - t.received_at : 0;
+        if (age > STALE_HIDE_MS) continue;
+        const alpha = age > STALE_FADE_MS
+          ? Math.max(0, 1 - (age - STALE_FADE_MS) / (STALE_HIDE_MS - STALE_FADE_MS))
+          : 1;
+
         const [x1, y1, x2, y2] = t.bbox;  // normalized 0-1 from Frigate
         const dx = offsetX + x1 * renderW;
         const dy = offsetY + y1 * renderH;
@@ -439,6 +468,7 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
         const dh = (y2 - y1) * renderH;
         const color = COLORS[t.class_name] || "#6b7280";
 
+        ctx.globalAlpha = alpha;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.strokeRect(dx, dy, dw, dh);
@@ -453,11 +483,13 @@ export default function CameraStream({ cameraId, cameraName, className = "", hid
         ctx.fillStyle = "#fff";
         ctx.fillText(label, dx + 4, dy - 4);
       }
+      ctx.globalAlpha = 1;
+
+      raf = requestAnimationFrame(draw);
     };
 
-    draw();
-    const iv = setInterval(draw, 500);
-    return () => clearInterval(iv);
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
   }, [tracks, showOverlay]);
 
   const retry = () => {
