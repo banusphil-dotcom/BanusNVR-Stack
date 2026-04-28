@@ -50,8 +50,12 @@ aiofiles>=25.1.0
 # --- MQTT (Frigate events + Ring camera discovery) ---
 paho-mqtt>=2.0.0
 
+
 # --- TOTP 2FA ---
 pyotp>=2.9.0
+
+# --- WebAuthn (Biometrics) ---
+fido2>=1.1.1
 
 # --- TensorFlow Lite (Coral/EdgeTPU) ---
 tflite-runtime>=2.5.0
