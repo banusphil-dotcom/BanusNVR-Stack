@@ -514,15 +514,20 @@ class FrigateBridge:
         if full_frame is None:
             return
 
-        # If crop is None (bbox extraction failed), skip thumbnail but keep snapshot
-        if object_crop is None:
-            object_crop = full_frame  # use for recognition attempt only, not thumbnail
+        # If the bbox-aware crop failed, we **do not** substitute the full
+        # frame for recognition. Letting face/pet recognisers see the whole
+        # scene caused them to attach an identity to whichever face was
+        # easiest to find anywhere in the image (a poster, a TV, the
+        # background person), not necessarily the object Frigate detected.
+        # Better to save the snapshot, skip recognition, and let the next
+        # `update` event try again with a (hopefully) cleaner crop.
+        recognition_crop = object_crop  # may be None — handled below
 
         # Save full frame as snapshot, bbox crop as thumbnail
         snap_path = await self._save_snapshot(full_frame, camera_id, frigate_id)
         # Only save thumbnail if we got a valid crop (not the full frame)
         thumb_path = None
-        if object_crop is not full_frame:
+        if object_crop is not None and object_crop is not full_frame:
             thumb_path = await self._save_thumbnail(object_crop, camera_id, frigate_id)
         if snap_path or thumb_path:
             async with async_session() as session:
@@ -565,6 +570,16 @@ class FrigateBridge:
             logger.debug("Skipping recognition for %s: Frigate score %.2f < 0.50", frigate_id[:12], score)
             return
 
+        # Skip recognition entirely if we couldn't isolate the object — we
+        # refuse to attribute an identity to "something somewhere in the
+        # frame" because that's how the wrong person ends up labelled.
+        if recognition_crop is None or recognition_crop is full_frame:
+            logger.info(
+                "Skipping recognition for %s on cam %s: no isolated object crop available",
+                frigate_id[:12], camera_id,
+            )
+            return
+
         named_object_id = None
         named_object_name = None
         match_score = 0.0
@@ -573,7 +588,7 @@ class FrigateBridge:
         try:
             if category == ObjectCategory.person:
                 named_object_id, named_object_name, match_score = await self._recognize_person(
-                    object_crop, camera_id,
+                    recognition_crop, camera_id,
                     full_frame=full_frame,
                     bbox=self._extract_bbox(data),
                     det_confidence=score,
@@ -581,7 +596,7 @@ class FrigateBridge:
                 )
             elif category == ObjectCategory.pet:
                 named_object_id, named_object_name, match_score = await self._recognize_pet(
-                    object_crop, label, camera_id
+                    recognition_crop, label, camera_id
                 )
         except Exception:
             logger.exception("Recognition failed for frigate event %s", frigate_id)
@@ -896,7 +911,18 @@ class FrigateBridge:
                     estimate_person_attributes as _est_attrs,
                     merge_stable_attributes,
                 )
-                fs = data.get("frame_shape")
+                # The bbox we extract via `_best_box` may come from either
+                # `snapshot.box` (lives in `snapshot.frame_shape` coords) or
+                # `box`/`current_box` (lives in `frame_shape` = detect coords).
+                # Pick the matching frame_shape so the attribute estimator's
+                # height-ratio calculation uses a consistent coordinate space.
+                snap = data.get("snapshot") or {}
+                snap_box = snap.get("box") if isinstance(snap, dict) else None
+                best_box = self._best_box(data)
+                if snap_box and best_box and list(snap_box) == list(best_box):
+                    fs = snap.get("frame_shape") or data.get("frame_shape")
+                else:
+                    fs = data.get("frame_shape")
                 if fs and len(fs) >= 2:
                     attr_frame_shape = (fs[0], fs[1])
                 elif full_frame is not None:
@@ -2334,15 +2360,40 @@ class FrigateBridge:
     # ── Bbox Extraction & Cropping ──
 
     @staticmethod
-    def _extract_bbox(data: dict) -> Optional[dict]:
-        """Convert Frigate's [x1,y1,x2,y2] box to our dict format."""
+    def _best_box(data: dict) -> Optional[list]:
+        """Return the most accurate bbox available in a Frigate event payload.
+
+        Frigate refines bboxes throughout the event lifetime. The fields, in
+        order of accuracy:
+          1. `current_box`   — bbox of the most recent detect frame (live)
+          2. `snapshot.box`  — bbox of the frame that produced the saved snapshot
+          3. `box`           — initial detection bbox (often stale by event end)
+
+        We prefer (2) when the data describes the saved snapshot (which is what
+        we'll actually fetch and crop), then fall back to (1) and (3).
+        """
+        snap = data.get("snapshot") or {}
+        snap_box = snap.get("box") if isinstance(snap, dict) else None
+        if snap_box and len(snap_box) == 4:
+            return list(snap_box)
+        current = data.get("current_box")
+        if current and len(current) == 4:
+            return list(current)
         box = data.get("box")
         if box and len(box) == 4:
+            return list(box)
+        return None
+
+    @classmethod
+    def _extract_bbox(cls, data: dict) -> Optional[dict]:
+        """Convert Frigate's [x1,y1,x2,y2] box to our dict format."""
+        box = cls._best_box(data)
+        if box:
             return {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]}
         return None
 
-    @staticmethod
-    def _crop_to_bbox(frame: np.ndarray, data: dict, padding: float = 0.15) -> Optional[np.ndarray]:
+    @classmethod
+    def _crop_to_bbox(cls, frame: np.ndarray, data: dict, padding: float = 0.15) -> Optional[np.ndarray]:
         """Crop frame to the detected object's bounding box with padding.
 
         Isolates the target object from the full frame so recognition/training
@@ -2353,15 +2404,23 @@ class FrigateBridge:
 
         Returns None if no valid bbox is available (callers must handle this).
         """
-        box = data.get("box")
-        if not box or len(box) != 4:
+        box = cls._best_box(data)
+        if not box:
             return None
         h, w = frame.shape[:2]
 
         x1f, y1f, x2f, y2f = float(box[0]), float(box[1]), float(box[2]), float(box[3])
 
         # ── Scale bbox from detect resolution to snapshot resolution ──
-        frame_shape = data.get("frame_shape")
+        # If we picked the bbox from `snapshot.box`, the matching `frame_shape`
+        # lives under `snapshot.frame_shape` and *that* is what we must scale
+        # against (the snapshot frame, not the live detect frame).
+        snap = data.get("snapshot") or {}
+        snap_box = snap.get("box") if isinstance(snap, dict) else None
+        if snap_box and list(snap_box) == [box[0], box[1], box[2], box[3]]:
+            frame_shape = snap.get("frame_shape") or data.get("frame_shape")
+        else:
+            frame_shape = data.get("frame_shape")
         # Frigate webhook events do NOT always include `frame_shape`. When the
         # snapshot was pulled from the HD record stream (e.g. 3840x2160) but
         # the bbox is in detect-stream coordinates (640x360), we need a
@@ -2509,75 +2568,83 @@ class FrigateBridge:
         camera_name: str,
         data: dict,
     ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Fetch snapshot and crop with validation + retry for PTZ cameras.
+        """Fetch a clean full frame + a tight, accurate crop of the object.
 
-        Tries multiple strategies to get a valid crop:
-        1. Standard: full frame + local bbox crop (with resolution scaling)
-        2. Frigate's atomic crop (frame + bbox guaranteed to match)
-        3. Re-fetch after brief delay (PTZ settling time)
-        4. Live camera frame re-crop
+        Atomic-first strategy:
+          1. **Frigate atomic crop** — `/api/events/<id>/snapshot.jpg?crop=1&bbox=0`.
+             Frigate applies its own bbox to its own snapshot frame server-side,
+             so the crop is guaranteed to be of the right object on the right
+             frame. No resolution-mixing math, no PTZ desync.
+          2. Full clean snapshot (`bbox=0`) for context / UI / face-fallback.
+          3. If the atomic crop is unavailable or fails our blur/uniformity
+             gate, we re-derive it locally from the clean snapshot using the
+             newest bbox we know about (`snapshot.box` → `current_box` → `box`).
+          4. Wait briefly + re-fetch (PTZ settling).
+          5. Live frame from go2rtc as last resort.
+          6. If everything fails, return `(full_frame_or_None, None)`. Callers
+             must NEVER substitute the full frame for the crop — that defeats
+             object isolation and lets face recognition see the whole scene.
 
-        Returns (full_frame, object_crop) — crop is None only on total failure.
-        Never returns the full frame as the crop.
+        Returns (full_frame, object_crop). `object_crop` is None only on
+        complete failure.
         """
         cam_friendly = _camera_id_to_friendly.get(camera_id, camera_name)
-        # Frigate puts the latest detection's frame timestamp in `frame_time`;
-        # fall back to start_time if missing. Used to pick the matching frame
-        # from the record stream.
         frame_time = data.get("frame_time") or data.get("start_time")
 
-        # ── Attempt 1: standard snapshot + local bbox crop ──
+        # ── Attempt 1: atomic Frigate crop (the cleanest option) ──
+        # This single call gives us a crop that is guaranteed to belong to
+        # the same frame Frigate ran detection on, with no overlay drawn.
+        atomic_crop = await self._fetch_frigate_crop(frigate_id)
+        atomic_crop_valid = (
+            atomic_crop is not None
+            and self._is_crop_valid(atomic_crop, None)
+        )
+
+        # Always also fetch the full clean snapshot for context (UI snapshot,
+        # attribute estimator frame_shape, face fallback against full body).
         full_frame = await self._fetch_snapshot(
             frigate_id, camera_name=camera_name, frame_time=frame_time,
         )
+
+        if atomic_crop_valid:
+            return full_frame, atomic_crop
+
         if full_frame is None:
-            return None, None
+            # Couldn't get the context frame either — caller will skip.
+            logger.warning(
+                "No clean snapshot available for %s on %s",
+                frigate_id[:12], cam_friendly,
+            )
+            return None, atomic_crop  # atomic_crop may still be a usable last resort
 
-        # Log resolution info on first crop for diagnostics
-        frame_shape = data.get("frame_shape")
         snap_h, snap_w = full_frame.shape[:2]
-        if frame_shape and len(frame_shape) >= 2:
-            det_h, det_w = frame_shape[0], frame_shape[1]
-            if abs(snap_w / det_w - 1.0) >= 0.05 or abs(snap_h / det_h - 1.0) >= 0.05:
-                logger.info(
-                    "Resolution mismatch for %s on %s: detect %dx%d, snapshot %dx%d — scaling bbox",
-                    frigate_id[:12], cam_friendly, det_w, det_h, snap_w, snap_h,
-                )
 
-        object_crop = self._crop_to_bbox(full_frame, data)
-        if self._is_crop_valid(object_crop, full_frame):
-            return full_frame, object_crop
+        # ── Attempt 2: local crop from clean snapshot using newest bbox ──
+        local_crop = self._crop_to_bbox(full_frame, data)
+        if self._is_crop_valid(local_crop, full_frame):
+            return full_frame, local_crop
 
         logger.info(
-            "Crop validation failed for %s on %s (bbox=%s, snap=%dx%d) — trying Frigate crop",
-            frigate_id[:12], cam_friendly, data.get("box"), snap_w, snap_h,
+            "Atomic + local crops both invalid for %s on %s "
+            "(box=%s, snap=%dx%d) — waiting 1s and retrying",
+            frigate_id[:12], cam_friendly, self._best_box(data), snap_w, snap_h,
         )
 
-        # ── Attempt 2: Frigate's own atomic crop ──
-        # Frigate internally matches bbox to the exact frame, avoiding PTZ desync
-        frigate_crop = await self._fetch_frigate_crop(frigate_id)
-        if frigate_crop is not None:
-            gray = cv2.cvtColor(frigate_crop, cv2.COLOR_BGR2GRAY)
-            lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            if lap_var >= 30.0:
-                logger.info("Using Frigate atomic crop for %s on %s", frigate_id[:12], cam_friendly)
-                return full_frame, frigate_crop
-
-        # ── Attempt 3: wait for PTZ to settle, re-fetch ──
-        logger.info(
-            "Frigate crop also invalid for %s on %s — waiting 2s for PTZ to settle",
-            frigate_id[:12], cam_friendly,
-        )
-        await asyncio.sleep(2.0)
+        # ── Attempt 3: brief wait + re-fetch atomic crop (PTZ settle) ──
+        await asyncio.sleep(1.0)
+        atomic_crop_2 = await self._fetch_frigate_crop(frigate_id)
+        if atomic_crop_2 is not None and self._is_crop_valid(atomic_crop_2, None):
+            logger.info("Retry atomic crop succeeded for %s on %s", frigate_id[:12], cam_friendly)
+            return full_frame, atomic_crop_2
 
         full_frame_2 = await self._fetch_snapshot(
             frigate_id, camera_name=camera_name, frame_time=frame_time,
         )
         if full_frame_2 is not None:
-            object_crop_2 = self._crop_to_bbox(full_frame_2, data)
-            if self._is_crop_valid(object_crop_2, full_frame_2):
+            local_crop_2 = self._crop_to_bbox(full_frame_2, data)
+            if self._is_crop_valid(local_crop_2, full_frame_2):
                 logger.info("Retry snapshot succeeded for %s on %s", frigate_id[:12], cam_friendly)
-                return full_frame_2, object_crop_2
+                return full_frame_2, local_crop_2
 
         # ── Attempt 4: live camera frame + re-crop ──
         live_frame = await self._fetch_recording_frame(
@@ -2589,26 +2656,25 @@ class FrigateBridge:
                 logger.info("Live frame crop succeeded for %s on %s", frigate_id[:12], cam_friendly)
                 return live_frame, live_crop
 
-        # ── All retries exhausted — use best available ──
-        # Prefer Frigate's crop (even blurry) over no crop
-        if frigate_crop is not None:
+        # ── Last resort: return whatever atomic crop we got, even if blurry ──
+        # NEVER return the full frame as the crop — that lets face recognition
+        # roam over the whole scene and pick up faces of other people / posters
+        # / TV screens. Better to skip recognition for this event.
+        if atomic_crop is not None:
             logger.warning(
-                "Using Frigate crop (blurry) for %s on %s — all retries failed",
+                "Using blurry atomic crop for %s on %s — all retries failed",
                 frigate_id[:12], cam_friendly,
             )
-            return full_frame, frigate_crop
-
-        # Return valid local crop even if it failed blur/uniformity check
-        # (still better than no crop at all), but NEVER return full frame
-        if object_crop is not None:
+            return full_frame, atomic_crop
+        if local_crop is not None:
             logger.warning(
-                "Using local crop (low quality) for %s on %s — all retries failed",
+                "Using low-quality local crop for %s on %s — all retries failed",
                 frigate_id[:12], cam_friendly,
             )
-            return full_frame, object_crop
+            return full_frame, local_crop
 
         logger.warning(
-            "All crop strategies failed for %s on %s — no valid crop available",
+            "All crop strategies failed for %s on %s — recognition will be skipped",
             frigate_id[:12], cam_friendly,
         )
         return full_frame, None

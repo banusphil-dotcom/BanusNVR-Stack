@@ -249,9 +249,16 @@ def generate_frigate_config(cameras: list) -> dict:
         },
         "snapshots": {
             "enabled": True,
+            # `clean_copy: True` keeps a *separate* clean snapshot file alongside
+            # the annotated one (Frigate's `/snapshot.jpg` endpoint with `bbox=0`
+            # serves the clean copy). We **must** have `bounding_box: False` so
+            # the *primary* snapshot we fetch for face/pet/attribute recognition
+            # doesn't have a green rectangle burned into it. Drawing the box
+            # into the image meant our recognition crops were literally being
+            # contaminated by Frigate's overlay.
             "clean_copy": True,
             "timestamp": False,
-            "bounding_box": True,
+            "bounding_box": False,
             "retain": {"default": 30},
         },
         "motion": {
