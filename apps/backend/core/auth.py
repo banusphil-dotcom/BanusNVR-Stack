@@ -1,4 +1,10 @@
-"""BanusNas — JWT Authentication."""
+"""BanusNas — JWT authentication, lockout, and session validation.
+
+Tokens carry a session id (`sid`) so revoking a row in `user_sessions`
+immediately invalidates every JWT issued under that session — without
+having to rotate the global signing key. This is what powers the "kick
+device off" admin action.
+"""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -16,6 +22,10 @@ from models.database import get_session
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
+# Account lockout policy
+MAX_FAILED_LOGINS = 5
+LOCKOUT_MINUTES = 15
+
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -25,22 +35,20 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(user_id: int, username: str) -> str:
+def create_access_token(user_id: int, username: str, session_id: int | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    return jwt.encode(
-        {"sub": str(user_id), "username": username, "exp": expire, "type": "access"},
-        settings.jwt_secret_key,
-        algorithm=settings.jwt_algorithm,
-    )
+    payload: dict = {"sub": str(user_id), "username": username, "exp": expire, "type": "access"}
+    if session_id is not None:
+        payload["sid"] = session_id
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(user_id: int) -> str:
+def create_refresh_token(user_id: int, session_id: int | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_token_expire_days)
-    return jwt.encode(
-        {"sub": str(user_id), "exp": expire, "type": "refresh"},
-        settings.jwt_secret_key,
-        algorithm=settings.jwt_algorithm,
-    )
+    payload: dict = {"sub": str(user_id), "exp": expire, "type": "refresh"}
+    if session_id is not None:
+        payload["sid"] = session_id
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 def decode_token(token: str) -> dict:
@@ -51,6 +59,24 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
+async def _validate_session(payload: dict, session: AsyncSession) -> None:
+    """If the JWT carries a session id, ensure it hasn't been revoked.
+
+    Tokens issued before sessions existed (legacy) have no `sid` and we
+    accept them — they'll be rotated naturally on next refresh.
+    """
+    sid = payload.get("sid")
+    if sid is None:
+        return
+    from models.schemas import UserSession
+
+    result = await session.execute(select(UserSession).where(UserSession.id == int(sid)))
+    sess = result.scalar_one_or_none()
+    if sess is None or sess.revoked_at is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session revoked")
+    sess.last_seen_at = datetime.now(timezone.utc)
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     session: AsyncSession = Depends(get_session),
@@ -58,6 +84,8 @@ async def get_current_user(
     payload = decode_token(credentials.credentials)
     if payload.get("type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+
+    await _validate_session(payload, session)
 
     user_id = int(payload["sub"])
 
@@ -67,6 +95,8 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if getattr(user, "disabled", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
     return user
 
 
@@ -80,17 +110,25 @@ async def get_user_from_token_param(
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token type")
+    await _validate_session(payload, session)
     user_id = int(payload["sub"])
     from models.schemas import User
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found")
+    if getattr(user, "disabled", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
     return user
 
 
 async def get_current_user_ws(websocket: WebSocket, token: Optional[str] = Query(None)):
-    """Authenticate a WebSocket connection via query-string token."""
+    """Authenticate a WebSocket connection via query-string token.
+
+    Note: WS handshake intentionally does NOT validate session revocation
+    to keep the connect cheap. If a session is revoked, the next API call
+    on the same token will fail and the client will reconnect.
+    """
     if not token:
         return None
     try:
@@ -100,3 +138,29 @@ async def get_current_user_ws(websocket: WebSocket, token: Optional[str] = Query
         return int(payload["sub"])
     except JWTError:
         return None
+
+
+# ----- Lockout helpers (used by login flow) -------------------------------
+
+
+def is_locked_out(user) -> bool:
+    if user.locked_until is None:
+        return False
+    locked_until = user.locked_until
+    if locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    return locked_until > datetime.now(timezone.utc)
+
+
+def register_failed_login(user) -> None:
+    """Increment failed counter and lock the account if threshold hit."""
+    user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+    if user.failed_login_attempts >= MAX_FAILED_LOGINS:
+        user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)
+        user.failed_login_attempts = 0
+
+
+def register_successful_login(user) -> None:
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.last_login_at = datetime.now(timezone.utc)

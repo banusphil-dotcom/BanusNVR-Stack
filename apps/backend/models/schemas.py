@@ -53,6 +53,19 @@ class EventType(str, enum.Enum):
     object_recognized = "object_recognized"
 
 
+class UserRole(str, enum.Enum):
+    """Role hierarchy: admin > operator > viewer > guest.
+
+    Each role implies a fixed bundle of feature permissions defined in
+    `core.permissions`. Stored as a string column so we can add new roles
+    without an enum migration.
+    """
+    admin = "admin"
+    operator = "operator"
+    viewer = "viewer"
+    guest = "guest"
+
+
 # --- Models ---
 
 
@@ -63,12 +76,65 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Legacy boolean — kept for backward compatibility, but `role` is the
+    # source of truth. Set to True iff role == admin.
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    role: Mapped[str] = mapped_column(String(20), default=UserRole.viewer.value, nullable=False)
     push_subscription: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     theme: Mapped[str] = mapped_column(String(16), default="system", nullable=False)
+
+    # Account lockout / password lifecycle
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     notification_rules: Mapped[list["NotificationRule"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class UserSession(Base):
+    """Per-device active session.
+
+    Issued on login; the JWT contains the session id (`sid`). Revoking a
+    session sets `revoked_at` and any future request bearing that JWT is
+    rejected, allowing admins to kick devices off without rotating the
+    global signing key.
+    """
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="sessions")
+
+
+class AuditLog(Base):
+    """Immutable audit trail for security-relevant actions.
+
+    Captures who did what, when, from which IP. Never updated, only inserted.
+    Admin-viewable.
+    """
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    actor_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    target_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class Camera(Base):

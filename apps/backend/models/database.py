@@ -37,6 +37,13 @@ async def init_db():
         ("cameras", "ptz_mode", "BOOLEAN DEFAULT false"),
         ("events", "group_key", "VARCHAR(100)"),
         ("users", "theme", "VARCHAR(16) DEFAULT 'system' NOT NULL"),
+        # --- User management Phase 1 ---
+        ("users", "role", "VARCHAR(20) DEFAULT 'viewer' NOT NULL"),
+        ("users", "failed_login_attempts", "INTEGER DEFAULT 0 NOT NULL"),
+        ("users", "locked_until", "TIMESTAMPTZ"),
+        ("users", "must_change_password", "BOOLEAN DEFAULT false NOT NULL"),
+        ("users", "last_login_at", "TIMESTAMPTZ"),
+        ("users", "disabled", "BOOLEAN DEFAULT false NOT NULL"),
     ]
     async with engine.begin() as conn:
         for table, column, col_type in _migrations:
@@ -50,6 +57,15 @@ async def init_db():
         try:
             await conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_events_group_key ON events (group_key)"
+            ))
+        except Exception:
+            pass
+
+        # Backfill role from legacy is_admin flag (only on rows where role is
+        # still default — a no-op once anyone has been explicitly assigned).
+        try:
+            await conn.execute(text(
+                "UPDATE users SET role = 'admin' WHERE is_admin = true AND role = 'viewer'"
             ))
         except Exception:
             pass

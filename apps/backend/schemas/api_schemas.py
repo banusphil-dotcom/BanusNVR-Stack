@@ -35,7 +35,11 @@ class UserResponse(BaseModel):
     username: str
     email: str
     is_admin: bool
+    role: str = "viewer"
     theme: str = "system"
+    must_change_password: bool = False
+    disabled: bool = False
+    last_login_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
