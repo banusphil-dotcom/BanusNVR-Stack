@@ -4,13 +4,14 @@ from pydantic_settings import BaseSettings
 from pydantic import Field
 
 
+
 class Settings(BaseSettings):
-        # Auth method toggles
-        auth_totp_enabled: bool = Field(default=True, description="Enable TOTP (2FA)")
-        auth_webauthn_enabled: bool = Field(default=True, description="Enable WebAuthn (biometrics/passkeys)")
-        auth_oidc_enabled: bool = Field(default=False, description="Enable OIDC (Single Sign-On)")
-        auth_api_tokens_enabled: bool = Field(default=True, description="Enable API tokens")
-        auth_magic_links_enabled: bool = Field(default=False, description="Enable magic link login")
+    # Auth method toggles
+    auth_totp_enabled: bool = Field(default=True, description="Enable TOTP (2FA)")
+    auth_webauthn_enabled: bool = Field(default=True, description="Enable WebAuthn (biometrics/passkeys)")
+    auth_oidc_enabled: bool = Field(default=False, description="Enable OIDC (Single Sign-On)")
+    auth_api_tokens_enabled: bool = Field(default=True, description="Enable API tokens")
+    auth_magic_links_enabled: bool = Field(default=False, description="Enable magic link login")
     # Database
     database_url: str = Field(default="postgresql+asyncpg://banusnas:changeme@db:5432/banusnas")
 
