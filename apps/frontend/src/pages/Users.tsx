@@ -99,87 +99,76 @@ export default function Users() {
       )}
 
       {usersQuery.data && (
-        <div className="rounded-xl border border-slate-800 overflow-x-auto">
-          <table className="w-full min-w-[600px] text-sm">
-            <thead className="bg-slate-900 text-slate-400 text-left">
-              <tr>
-                <th className="px-4 py-3 font-medium">User</th>
-                <th className="px-4 py-3 font-medium">Role</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Last login</th>
-                <th className="px-4 py-3 font-medium text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usersQuery.data.map((u) => {
-                const isMe = me?.id === String(u.id);
-                return (
-                  <tr key={u.id} className="border-t border-slate-800 hover:bg-slate-900/40">
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{u.username} {isMe && <span className="text-xs text-slate-500">(you)</span>}</div>
-                      <div className="text-xs text-slate-500">{u.email}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <select
-                        value={u.role}
-                        disabled={isMe}
-                        onChange={(e) => updateMut.mutate({ id: u.id, patch: { role: e.target.value as UserRole } })}
-                        className={`px-2 py-1 rounded border text-xs font-medium ${roleStyle[u.role]} disabled:opacity-50`}
-                      >
-                        {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                    </td>
-                    <td className="px-4 py-3">
-                      {u.disabled ? (
-                        <span className="text-xs px-2 py-1 rounded-full bg-red-500/15 text-red-300 border border-red-500/30">Disabled</span>
-                      ) : u.must_change_password ? (
-                        <span className="text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Must change pw</span>
-                      ) : (
-                        <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Active</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-slate-400">{formatDate(u.last_login_at)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-col xs:flex-row flex-wrap items-end justify-end gap-1 min-w-[120px]">
-                        <button
-                          onClick={() => unlockMut.mutate(u.id)}
-                          className="p-2 rounded hover:bg-slate-800 text-slate-400 w-full xs:w-auto"
-                          title="Reset failed attempts / unlock"
-                        >
-                          <Unlock size={16} />
-                        </button>
-                        <button
-                          onClick={() => setResetTarget(u)}
-                          className="p-2 rounded hover:bg-slate-800 text-slate-400 w-full xs:w-auto"
-                          title="Reset password"
-                        >
-                          <KeyRound size={16} />
-                        </button>
-                        <button
-                          onClick={() => updateMut.mutate({ id: u.id, patch: { disabled: !u.disabled } })}
-                          disabled={isMe}
-                          className="p-2 rounded hover:bg-slate-800 text-slate-400 disabled:opacity-30 w-full xs:w-auto"
-                          title={u.disabled ? "Re-enable" : "Disable"}
-                        >
-                          {u.disabled ? <Shield size={16} /> : <ShieldOff size={16} />}
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm(`Permanently delete user "${u.username}"?`)) deleteMut.mutate(u.id);
-                          }}
-                          disabled={isMe}
-                          className="p-2 rounded hover:bg-red-500/20 text-red-400 disabled:opacity-30 w-full xs:w-auto"
-                          title="Delete user"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {usersQuery.data.map((u) => {
+            const isMe = me?.id === String(u.id);
+            return (
+              <div key={u.id} className="rounded-xl border border-slate-800 bg-slate-900 p-4 flex flex-col gap-2 shadow-sm">
+                <div className="flex items-center gap-2 justify-between">
+                  <div>
+                    <div className="font-semibold text-lg flex items-center gap-2">{u.username} {isMe && <span className="text-xs text-slate-500">(you)</span>}</div>
+                    <div className="text-xs text-slate-400">{u.email}</div>
+                  </div>
+                  <span className={`px-2 py-1 rounded text-xs border ${roleStyle[u.role]}`}>{u.role}</span>
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  {u.disabled ? (
+                    <span className="text-xs px-2 py-1 rounded-full bg-red-500/15 text-red-300 border border-red-500/30">Disabled</span>
+                  ) : u.must_change_password ? (
+                    <span className="text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Must change pw</span>
+                  ) : (
+                    <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Active</span>
+                  )}
+                  <span className="text-xs text-slate-500 ml-auto">Last login: {formatDate(u.last_login_at)}</span>
+                </div>
+                <div className="flex flex-col gap-2 mt-2">
+                  <label className="block text-xs text-slate-400 mb-1">Role</label>
+                  <select
+                    value={u.role}
+                    disabled={isMe}
+                    onChange={(e) => updateMut.mutate({ id: u.id, patch: { role: e.target.value as UserRole } })}
+                    className={`px-2 py-1 rounded border text-xs font-medium ${roleStyle[u.role]} disabled:opacity-50`}
+                  >
+                    {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <button
+                    onClick={() => unlockMut.mutate(u.id)}
+                    className="flex items-center gap-1 px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+                    title="Reset failed attempts / unlock"
+                  >
+                    <Unlock size={16} /> Unlock
+                  </button>
+                  <button
+                    onClick={() => setResetTarget(u)}
+                    className="flex items-center gap-1 px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+                    title="Reset password"
+                  >
+                    <KeyRound size={16} /> Reset PW
+                  </button>
+                  <button
+                    onClick={() => updateMut.mutate({ id: u.id, patch: { disabled: !u.disabled } })}
+                    disabled={isMe}
+                    className="flex items-center gap-1 px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs disabled:opacity-30"
+                    title={u.disabled ? "Re-enable" : "Disable"}
+                  >
+                    {u.disabled ? <Shield size={16} /> : <ShieldOff size={16} />} {u.disabled ? "Enable" : "Disable"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Permanently delete user "${u.username}"?`)) deleteMut.mutate(u.id);
+                    }}
+                    disabled={isMe}
+                    className="flex items-center gap-1 px-3 py-2 rounded bg-red-900 hover:bg-red-700 text-red-300 text-xs disabled:opacity-30"
+                    title="Delete user"
+                  >
+                    <Trash2 size={16} /> Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
