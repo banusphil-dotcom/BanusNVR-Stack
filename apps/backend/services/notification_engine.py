@@ -200,9 +200,18 @@ class NotificationEngine:
                     # Add to existing group
                     grp = self._pending_groups[group_key]
                     grp["names"].append(display_name)
-                    # Keep the latest snapshot and event_id
-                    grp["event_id"] = event_id
-                    grp["snapshot_path"] = snapshot_path or grp["snapshot_path"]
+                    # Only swap the snapshot/event_id when the new detection is
+                    # an *upgrade* (unknown → named identity). Otherwise keep
+                    # the first event's snapshot — the latest detection often
+                    # belongs to a different/spurious object (e.g. Frigate
+                    # firing "oven" right after a person), and overwriting
+                    # would put a bbox around the wrong thing in the push.
+                    prev_named = grp.get("named_object_id")
+                    if named_object_id and not prev_named:
+                        grp["event_id"] = event_id
+                        grp["snapshot_path"] = snapshot_path or grp["snapshot_path"]
+                        grp["named_object_id"] = named_object_id
+                        grp["object_type"] = object_type
                     continue
 
                 # Start a new group
@@ -215,6 +224,7 @@ class NotificationEngine:
                     "rule": rule,
                     "user": user,
                     "object_type": object_type,
+                    "named_object_id": named_object_id,
                 }
 
                 # Schedule the flush after the group window

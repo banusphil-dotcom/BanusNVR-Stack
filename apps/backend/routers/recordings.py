@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,21 +124,42 @@ async def serve_segment(
             key=lambda f: abs(float(f.stem.replace(".", "", 1)) - float(min_sec.replace(".", "", 1))),
         )
 
-    # Transmux MP4 → MPEG-TS (copy streams, no re-encoding — fast)
+    # Transmux MP4 → MPEG-TS (copy streams, no re-encoding — fast).
+    # Stream ffmpeg's stdout directly to the client so hls.js can start
+    # decoding immediately instead of waiting for the entire segment to
+    # be transmuxed and buffered server-side. This is the difference
+    # between "playback starts in 5s" and "playback is instant".
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-i", str(target_file),
-        "-c", "copy", "-f", "mpegts", "pipe:1",
+        "-c", "copy", "-f", "mpegts",
+        "-mpegts_flags", "+resend_headers",
+        "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        logger.warning("ffmpeg transmux failed for %s: %s", target_file, stderr.decode(errors="replace"))
-        raise HTTPException(status_code=500, detail="Failed to transmux segment")
 
-    return Response(
-        content=stdout,
+    async def _iter_chunks():
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = await proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        _iter_chunks(),
         media_type="video/mp2t",
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )

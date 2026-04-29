@@ -145,8 +145,8 @@ class FrigateBridge:
         # camera_id → {zone_key: suppress_until_ts}
         self._static_fp_suppressed: dict[int, dict[str, float]] = {}
 
-        # Event grouping: camera_id → (group_key, last_event_ts)
-        self._active_groups: dict[int, tuple[str, float]] = {}
+        # Event grouping: camera_id → (group_key, last_event_ts, group_started_ts)
+        self._active_groups: dict[int, tuple[str, float, float]] = {}
 
         # Event consolidation: (camera_id, object_type, named_object_id|0) → {event_id, last_ts, bbox}
         # Allows extending an existing event instead of creating a new one
@@ -1917,16 +1917,24 @@ class FrigateBridge:
     def _get_or_create_group_key(self, camera_id: int, event_ts: float) -> str:
         """Get or create a group key for this camera within the grouping window.
 
-        Events on the same camera within GROUP_WINDOW_S of each other share a group.
+        A group is extended when a new event arrives within GROUP_WINDOW_S of the
+        previous event AND the group has been active for less than
+        MAX_EVENT_DURATION_S total. Past that absolute cap we force a new group
+        even on continuous activity, so the UI doesn't collapse a 24-hour run
+        of detections into a single card.
         """
         existing = self._active_groups.get(camera_id)
-        if existing and (event_ts - existing[1]) < GROUP_WINDOW_S:
-            # Extend existing group window
-            self._active_groups[camera_id] = (existing[0], event_ts)
-            return existing[0]
+        if existing:
+            key, last_ts, started_ts = existing
+            within_idle = (event_ts - last_ts) < GROUP_WINDOW_S
+            within_total = (event_ts - started_ts) < MAX_EVENT_DURATION_S
+            if within_idle and within_total:
+                # Extend existing group
+                self._active_groups[camera_id] = (key, event_ts, started_ts)
+                return key
         # New group
         group_key = f"cam{camera_id}_{int(event_ts)}"
-        self._active_groups[camera_id] = (group_key, event_ts)
+        self._active_groups[camera_id] = (group_key, event_ts, event_ts)
         return group_key
 
     # ── Event Consolidation ──
