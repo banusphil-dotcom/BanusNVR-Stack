@@ -44,130 +44,123 @@ function useAuthSettings() {
   });
 }
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { api, getToken } from "../api";
-import { useAuth } from "../hooks/useAuth";
-import MySessions from "../components/MySessions";
-import {
-  Bell, Mail, Shield, HardDrive, Save, Key, Cpu, MemoryStick,
-  Monitor, RefreshCw, Smartphone, LogOut,
-  Activity, Clock, Camera, ChevronDown, ChevronRight, Zap, Leaf, Scale,
-  SlidersHorizontal, RotateCcw, Server, Wifi, WifiOff,
-  Usb, ArrowLeftRight, AlertCircle, Timer, Hash,
-  Radio, Sun, Moon, Palette, ExternalLink,
-} from "lucide-react";
+function AccountSettings() {
+  const { user, logout, refreshProfile } = useAuth();
+  const [expanded, setExpanded] = useState(false);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [status, setStatus] = useState("");
+  const [showTOTP, setShowTOTP] = useState(false);
+  const [totpBusy, setTotpBusy] = useState(false);
+  const [totpError, setTotpError] = useState<string | null>(null);
 
-interface GlobalSettings {
-  retention_events_days: number;
-  retention_continuous_days: number;
-  retention_snapshots_days: number;
-  smtp_host: string;
-  smtp_port: number;
-  smtp_user: string;
-  smtp_from: string;
-}
+  const { data: authSettings, refetch: refetchAuthSettings } = useAuthSettings();
 
-interface HardwareResources {
-  cpu_name: string;
-  cpu_cores: number;
-  cpu_percent: number;
-  ram_total_gb: number;
-  ram_used_gb: number;
-  ram_percent: number;
-  gpu_available: boolean;
-  gpu_name?: string;
-  gpu_percent?: number;
-  gpu_inference_device?: string;
-  coral_available: boolean;
-  coral_status?: { available: boolean; active_model?: string; swap_count: number; last_swap_ms: number; yolo_input_size: number; cnn_embed_dim?: number } | null;
-  detector_type?: string | null;
-  detector_devices?: string[];
-  storage_used_gb: number;
-  storage_total_gb: number;
-  storage_percent: number;
-  cameras_active: number;
-  cameras_relay: number;
-  cameras_transcode: number;
-  estimated_max_cameras_relay: number;
-  estimated_max_cameras_transcode: number;
-  uptime_seconds: number;
-  warnings: { level: string; category: string; message: string; value: number; limit?: number }[];
-}
+  const changeMut = useMutation({
+    mutationFn: (data: { old_password: string; new_password: string }) =>
+      api.put("/api/auth/password", data),
+    onSuccess: () => {
+      setStatus("Password updated");
+      setOldPassword("");
+      setNewPassword("");
+    },
+    onError: (err: any) => setStatus(err.message),
+  });
 
-interface PerformanceSettings {
-  motion_frame_skip: number;
-  motion_blur_kernel: number;
-  motion_cooldown: number;
-  track_interval: number;
-  enhanced_scan_interval: number;
-  yolo_concurrency: number;
-  max_detection_pipelines: number;
-  jpeg_quality: number;
-  preset: string | null;
-  ml_offload_enabled: boolean;
-  ml_offload_url: string;
-  coral_enabled: boolean;
-}
+  const disableTOTP = async () => {
+    setTotpBusy(true);
+    setTotpError(null);
+    try {
+      await api.post("/api/auth/totp/disable", {});
+      await refreshProfile();
+    } catch (err: any) {
+      setTotpError(err.message || "Failed to disable 2FA");
+    } finally {
+      setTotpBusy(false);
+    }
+  };
 
-interface MLHealthInfo {
-  enabled: boolean;
-  online?: boolean;
-  gpu?: string;
-  models?: Record<string, boolean>;
-  error?: string;
-}
-
-const PRESETS: { key: string; label: string; icon: React.ReactNode; desc: string; color: string; values: Omit<PerformanceSettings, "preset"> }[] = [
-  {
-    key: "performance", label: "Performance", icon: <Zap size={14} />, desc: "More responsive detection, higher CPU",
-    color: "text-amber-400 border-amber-500/40 bg-amber-500/10",
-    values: { motion_frame_skip: 6, motion_blur_kernel: 7, motion_cooldown: 3, track_interval: 2, enhanced_scan_interval: 10, yolo_concurrency: 2, max_detection_pipelines: 3, jpeg_quality: 95, ml_offload_enabled: false, ml_offload_url: "https://ml.banusphotos.com", coral_enabled: false },
-  },
-  {
-    key: "balanced", label: "Balanced", icon: <Scale size={14} />, desc: "Recommended — good detection, low load",
-    color: "text-blue-400 border-blue-500/40 bg-blue-500/10",
-    values: { motion_frame_skip: 10, motion_blur_kernel: 7, motion_cooldown: 5, track_interval: 3, enhanced_scan_interval: 30, yolo_concurrency: 1, max_detection_pipelines: 2, jpeg_quality: 80, ml_offload_enabled: false, ml_offload_url: "https://ml.banusphotos.com", coral_enabled: false },
-  },
-  {
-    key: "eco", label: "Eco", icon: <Leaf size={14} />, desc: "Minimal resources, reduced detection",
-    color: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10",
-    values: { motion_frame_skip: 15, motion_blur_kernel: 9, motion_cooldown: 8, track_interval: 5, enhanced_scan_interval: 60, yolo_concurrency: 1, max_detection_pipelines: 1, jpeg_quality: 65, ml_offload_enabled: false, ml_offload_url: "https://ml.banusphotos.com", coral_enabled: false },
-  },
-];
-
-export default function Settings() {
-  const [showAdvanced, setShowAdvanced] = useState(false);
   return (
-    <div className="p-4 space-y-6 pb-24 max-w-2xl mx-auto">
-      <h2 className="text-lg font-bold">Settings</h2>
-      <ResourceMonitor />
-      <MLServerSettings />
-      <RingSettings />
-      <NotificationSettings />
-      <StorageSettings />
-      <AccountSettings />
-      <ThemeSettings />
-      <AppSettings />
-
-      <button
-        onClick={() => setShowAdvanced((v) => !v)}
-        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-slate-700 text-sm text-slate-300"
-      >
-        <SlidersHorizontal size={14} />
-        {showAdvanced ? "Hide Advanced" : "Show Advanced"}
-        {showAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-      </button>
-
-      {showAdvanced && (
-        <div className="space-y-6">
-          <div className="text-xs text-slate-500 px-2">
-            Power-user controls. Defaults are tuned for the current hardware — change only if you know what you're doing.
-          </div>
-          <AdvancedSettings />
-          <TrainingReinforcementSettings />
-          <CoralStatus />
-        </div>
+    <div className="space-y-3">
+      {/* Admin: Auth method toggles */}
+      {user?.is_admin && authSettings && (
+        <AuthTogglesAdmin authSettings={authSettings} refetch={refetchAuthSettings} />
       )}
+
+      {/* Resource gauges grid */}
+      <div className="grid grid-cols-3 gap-3">
+        <ResourceGauge
+          label="CPU"
+          value={hw.cpu_percent}
+          icon={<Cpu size={14} />}
+          detail={`${hw.cpu_cores} cores`}
+          history={history.map((h) => h.cpu_percent)}
+          color="blue"
+        />
+        <ResourceGauge
+          label="GPU"
+          value={hw.gpu_percent ?? 0}
+          icon={<Monitor size={14} />}
+          detail={hw.gpu_inference_device === "GPU" ? "OpenVINO" : hw.gpu_available ? "Idle" : "N/A"}
+          history={history.map((h) => h.gpu_percent ?? 0)}
+          color="emerald"
+          badge={hw.gpu_inference_device === "GPU" ? "ACTIVE" : undefined}
+        />
+        <ResourceGauge
+          label="RAM"
+          value={hw.ram_percent}
+          icon={<MemoryStick size={14} />}
+          detail={`${hw.ram_used_gb.toFixed(1)}/${hw.ram_total_gb.toFixed(1)} GB`}
+          history={history.map((h) => h.ram_percent)}
+          color="purple"
+        />
+      </div>
+
+      {/* Storage bar */}
+      <div className="card py-3 px-4">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-xs font-medium flex items-center gap-1.5">
+            <HardDrive size={13} className="text-slate-400" /> Storage
+          </span>
+          <span className="text-xs text-slate-400">
+            {hw.storage_used_gb.toFixed(1)} / {hw.storage_total_gb.toFixed(1)} GB
+          </span>
+        </div>
+        <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${
+              hw.storage_percent > 90 ? "bg-red-500" : hw.storage_percent > 75 ? "bg-amber-500" : "bg-blue-500"
+            }`}
+            style={{ width: `${Math.min(100, hw.storage_percent)}%` }}
+          />
+        </div>
+      </div>
+
+      {/* AI Detector / accelerator indicator */}
+      <DetectorIndicator hw={hw} />
+
+      {/* System info line */}
+      <div className="text-[10px] text-slate-600 px-1">
+        {hw.cpu_name} &middot; {hw.gpu_name || "No GPU"}{hw.coral_available ? " · Coral TPU" : ""} &middot; Max {hw.estimated_max_cameras_relay} cameras
+      </div>
+
+      {/* Warnings */}
+      {hw.warnings.filter((w) => w.level !== "info").length > 0 ? (
+        <div className="space-y-1">
+          {hw.warnings.filter((w) => w.level !== "info").map((w, i) => (
+            <div
+              key={i}
+              className={`text-xs px-3 py-2 rounded-lg ${
+                w.level === "critical"
+                  ? "bg-red-900/30 text-red-300 border border-red-800/50"
+                  : "bg-amber-900/20 text-amber-300 border border-amber-800/50"
+              }`}
+            >
+              {w.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -500,92 +493,84 @@ function AccountSettings() {
     } finally {
       setTotpBusy(false);
     }
-  };
 
-  return (
-    <div className="space-y-3">
-      {/* Admin: Auth method toggles */}
-      {user?.is_admin && authSettings && (
-        <AuthTogglesAdmin authSettings={authSettings} refetch={refetchAuthSettings} />
-      )}
-      </div>
+          {/* Resource gauges grid */}
+          <div className="grid grid-cols-3 gap-3">
+            <ResourceGauge
+              label="CPU"
+              value={hw.cpu_percent}
+              icon={<Cpu size={14} />}
+              detail={`${hw.cpu_cores} cores`}
+              history={history.map((h) => h.cpu_percent)}
+              color="blue"
+            />
+            <ResourceGauge
+              label="GPU"
+              value={hw.gpu_percent ?? 0}
+              icon={<Monitor size={14} />}
+              detail={hw.gpu_inference_device === "GPU" ? "OpenVINO" : hw.gpu_available ? "Idle" : "N/A"}
+              history={history.map((h) => h.gpu_percent ?? 0)}
+              color="emerald"
+              badge={hw.gpu_inference_device === "GPU" ? "ACTIVE" : undefined}
+            />
+            <ResourceGauge
+              label="RAM"
+              value={hw.ram_percent}
+              icon={<MemoryStick size={14} />}
+              detail={`${hw.ram_used_gb.toFixed(1)}/${hw.ram_total_gb.toFixed(1)} GB`}
+              history={history.map((h) => h.ram_percent)}
+              color="purple"
+            />
+          </div>
 
-      {/* Resource gauges grid */}
-      <div className="grid grid-cols-3 gap-3">
-        <ResourceGauge
-          label="CPU"
-          value={hw.cpu_percent}
-          icon={<Cpu size={14} />}
-          detail={`${hw.cpu_cores} cores`}
-          history={history.map((h) => h.cpu_percent)}
-          color="blue"
-        />
-        <ResourceGauge
-          label="GPU"
-          value={hw.gpu_percent ?? 0}
-          icon={<Monitor size={14} />}
-          detail={hw.gpu_inference_device === "GPU" ? "OpenVINO" : hw.gpu_available ? "Idle" : "N/A"}
-          history={history.map((h) => h.gpu_percent ?? 0)}
-          color="emerald"
-          badge={hw.gpu_inference_device === "GPU" ? "ACTIVE" : undefined}
-        />
-        <ResourceGauge
-          label="RAM"
-          value={hw.ram_percent}
-          icon={<MemoryStick size={14} />}
-          detail={`${hw.ram_used_gb.toFixed(1)}/${hw.ram_total_gb.toFixed(1)} GB`}
-          history={history.map((h) => h.ram_percent)}
-          color="purple"
-        />
-      </div>
-
-      {/* Storage bar */}
-      <div className="card py-3 px-4">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-xs font-medium flex items-center gap-1.5">
-            <HardDrive size={13} className="text-slate-400" /> Storage
-          </span>
-          <span className="text-xs text-slate-400">
-            {hw.storage_used_gb.toFixed(1)} / {hw.storage_total_gb.toFixed(1)} GB
-          </span>
-        </div>
-        <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${
-              hw.storage_percent > 90 ? "bg-red-500" : hw.storage_percent > 75 ? "bg-amber-500" : "bg-blue-500"
-            }`}
-            style={{ width: `${Math.min(100, hw.storage_percent)}%` }}
-          />
-        </div>
-      </div>
-
-      {/* AI Detector / accelerator indicator */}
-      <DetectorIndicator hw={hw} />
-
-      {/* System info line */}
-      <div className="text-[10px] text-slate-600 px-1">
-        {hw.cpu_name} &middot; {hw.gpu_name || "No GPU"}{hw.coral_available ? " · Coral TPU" : ""} &middot; Max {hw.estimated_max_cameras_relay} cameras
-      </div>
-
-      {/* Warnings */}
-      {hw.warnings.filter((w) => w.level !== "info").length > 0 && (
-        <div className="space-y-1">
-          {hw.warnings.filter((w) => w.level !== "info").map((w, i) => (
-            <div
-              key={i}
-              className={`text-xs px-3 py-2 rounded-lg ${
-                w.level === "critical"
-                  ? "bg-red-900/30 text-red-300 border border-red-800/50"
-                  : "bg-amber-900/20 text-amber-300 border border-amber-800/50"
-              }`}
-            >
-              {w.message}
+          {/* Storage bar */}
+          <div className="card py-3 px-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-medium flex items-center gap-1.5">
+                <HardDrive size={13} className="text-slate-400" /> Storage
+              </span>
+              <span className="text-xs text-slate-400">
+                {hw.storage_used_gb.toFixed(1)} / {hw.storage_total_gb.toFixed(1)} GB
+              </span>
             </div>
-          ))}
+            <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  hw.storage_percent > 90 ? "bg-red-500" : hw.storage_percent > 75 ? "bg-amber-500" : "bg-blue-500"
+                }`}
+                style={{ width: `${Math.min(100, hw.storage_percent)}%` }}
+              />
+            </div>
+          </div>
+
+          {/* AI Detector / accelerator indicator */}
+          <DetectorIndicator hw={hw} />
+
+          {/* System info line */}
+          <div className="text-[10px] text-slate-600 px-1">
+            {hw.cpu_name} &middot; {hw.gpu_name || "No GPU"}{hw.coral_available ? " · Coral TPU" : ""} &middot; Max {hw.estimated_max_cameras_relay} cameras
+          </div>
+
+          {/* Warnings */}
+          {hw.warnings.filter((w) => w.level !== "info").length > 0 ? (
+            <div className="space-y-1">
+              {hw.warnings.filter((w) => w.level !== "info").map((w, i) => (
+                <div
+                  key={i}
+                  className={`text-xs px-3 py-2 rounded-lg ${
+                    w.level === "critical"
+                      ? "bg-red-900/30 text-red-300 border border-red-800/50"
+                      : "bg-amber-900/20 text-amber-300 border border-amber-800/50"
+                  }`}
+                >
+                  {w.message}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
-      )}
-    </div>
-  );
+      );
+}
 }
 
 function ResourceGauge({
@@ -671,7 +656,6 @@ function ResourceGauge({
       </div>
     </div>
   );
-}
 
 /* ═══════════════════════ Training / Auto-Enroll Settings ═══════════════════════ */
 
