@@ -234,6 +234,11 @@ class EventProcessor:
     # Persistent presence: after this many consolidations, use extended gap
     PERSISTENT_PRESENCE_COUNT = 3
     CONSOLIDATION_GAP_PERSISTENT = 7200  # 2 hr for persistent presence (sleeping pet, parked car)
+    # Hard cap on the *total* duration a single event can be extended to.
+    # Without this, repeated low-frequency detections of the same recognised
+    # entity collapse into one row that spans many hours ("Philip has been in
+    # the kitchen for 24 hours"). Past this age we force a fresh event.
+    MAX_EVENT_DURATION_S = 600  # 10 min absolute cap
 
     # ── Cross-camera presence settings ──
     PRESENCE_TIMEOUT = 1800  # 30 min — after this, presence is stale
@@ -274,6 +279,13 @@ class EventProcessor:
         if not cached:
             return None
 
+        # Hard cap: refuse to extend an event past MAX_EVENT_DURATION_S so a
+        # continuously-redetected entity doesn't produce a single 24h row.
+        first_seen = cached.get("first_seen")
+        if first_seen and (now - first_seen) > self.MAX_EVENT_DURATION_S:
+            del self._recent_events[key]
+            return None
+
         # Time since last detection on this event
         elapsed = now - cached["last_extended"]
 
@@ -311,12 +323,15 @@ class EventProcessor:
         oid_key = named_object_id if named_object_id else "unknown"
         key = (camera_id, object_type, oid_key)
         existing = self._recent_events.get(key)
-        count = (existing.get("consolidation_count", 1) + 1) if existing and existing["event_id"] == event_id else 1
+        same_event = bool(existing and existing["event_id"] == event_id)
+        count = (existing.get("consolidation_count", 1) + 1) if same_event else 1
+        first_seen = existing.get("first_seen") if same_event else time.time()
         self._recent_events[key] = {
             "event_id": event_id,
             "bbox": bbox,
             "last_extended": time.time(),
             "consolidation_count": count,
+            "first_seen": first_seen,
         }
 
     def update_presence(self, named_object_id: int, camera_id: int):

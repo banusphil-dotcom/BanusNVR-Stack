@@ -21,13 +21,32 @@ def _serialize_public_key(pub) -> str:
 
 
 def _serialize_private_key(priv) -> str:
-    """Serialize an EC private key as a PEM string (accepted by pywebpush)."""
-    pem = priv.private_bytes(
-        encoding=Encoding.PEM,
+    """Serialize an EC private key as base64url-encoded PKCS8 DER.
+
+    pywebpush / py_vapid accept either PEM or base64url DER. The DER form
+    avoids any ambiguity around line endings / whitespace handling that has
+    bitten us when the PEM round-trips through Postgres JSONB and JSON
+    libraries — some of those paths corrupt the embedded newlines and the
+    cryptography library then refuses to parse the result with an opaque
+    "ASN.1 parsing error: invalid length".
+    """
+    der = priv.private_bytes(
+        encoding=Encoding.DER,
         format=PrivateFormat.PKCS8,
         encryption_algorithm=NoEncryption(),
     )
-    return pem.decode("ascii")
+    return _b64url(der)
+
+
+def _validate_private_key(s: str) -> bool:
+    """Return True iff `s` is a private key string py_vapid can actually load."""
+    if not s:
+        return False
+    try:
+        Vapid.from_string(s)
+        return True
+    except Exception:
+        return False
 
 VAPID_KEY_DB_KEY = "vapid_keys"
 
@@ -56,12 +75,22 @@ async def set_vapid_keys(session: AsyncSession, public_key: str, private_key: st
     await session.commit()
 
 async def ensure_vapid_keys(session: AsyncSession, claim_email: str) -> dict:
-    """Ensure VAPID keys exist in DB, generate if missing. Returns dict with public_key, private_key, claim_email."""
+    """Ensure VAPID keys exist in DB, generate if missing OR if the stored
+    private key can no longer be parsed by py_vapid (e.g. older builds wrote
+    a PEM that round-tripped through JSONB and got mangled). In the latter
+    case we regenerate so push delivery starts working again — existing
+    browser subscriptions tied to the old public key will need to re-subscribe.
+    """
     keys = await get_vapid_keys(session)
-    if keys and keys.get("public_key") and keys.get("private_key"):
+    if keys and keys.get("public_key") and _validate_private_key(keys.get("private_key", "")):
         return keys
-    # Generate new keys
-    logging.info("Generating new VAPID key pair...")
+    if keys:
+        logging.warning(
+            "Stored VAPID private key is unparseable — regenerating. "
+            "Existing browser push subscriptions will need to re-subscribe."
+        )
+    else:
+        logging.info("Generating new VAPID key pair...")
     vapid = Vapid()
     vapid.generate_keys()
     public_key = _serialize_public_key(vapid.public_key)
