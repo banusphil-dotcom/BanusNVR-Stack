@@ -11,9 +11,17 @@ from sqlalchemy import func
 from core.auth import get_current_user
 from core.config import settings
 from models.database import get_session
-from models.schemas import NotificationRule, PushSubscription as PushSubscriptionRow, SentNotification, User
+from models.schemas import (
+    NotificationPreference,
+    NotificationRule,
+    PushSubscription as PushSubscriptionRow,
+    SentNotification,
+    User,
+)
 from schemas.api_schemas import (
     NotificationHistoryPage,
+    NotificationPreferenceResponse,
+    NotificationPreferenceUpdate,
     NotificationRuleCreate,
     NotificationRuleResponse,
     NotificationRuleUpdate,
@@ -184,6 +192,45 @@ async def delete_subscription(
         raise HTTPException(status_code=404, detail="Subscription not found")
     await session.delete(sub)
     await session.commit()
+
+
+# --- Per-user preferences ---
+
+
+async def _get_or_create_preferences(session: AsyncSession, user_id: int) -> NotificationPreference:
+    pref = (await session.execute(
+        select(NotificationPreference).where(NotificationPreference.user_id == user_id)
+    )).scalar_one_or_none()
+    if pref is None:
+        pref = NotificationPreference(user_id=user_id)
+        session.add(pref)
+        await session.commit()
+        await session.refresh(pref)
+    return pref
+
+
+@router.get("/preferences", response_model=NotificationPreferenceResponse)
+async def get_preferences(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    pref = await _get_or_create_preferences(session, user.id)
+    return NotificationPreferenceResponse.model_validate(pref)
+
+
+@router.put("/preferences", response_model=NotificationPreferenceResponse)
+async def update_preferences(
+    data: NotificationPreferenceUpdate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    pref = await _get_or_create_preferences(session, user.id)
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(pref, key, value)
+    session.add(pref)
+    await session.commit()
+    await session.refresh(pref)
+    return NotificationPreferenceResponse.model_validate(pref)
 
 
 @router.get("/rules", response_model=list[NotificationRuleResponse])

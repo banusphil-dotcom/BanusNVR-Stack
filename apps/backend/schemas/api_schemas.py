@@ -331,6 +331,29 @@ class PushSubscriptionRename(BaseModel):
     device_name: str = Field(min_length=1, max_length=200)
 
 
+class NotificationPreferenceResponse(BaseModel):
+    push_enabled: bool
+    email_enabled: bool
+    muted_object_types: list[str]
+    quiet_hours_enabled: bool
+    quiet_start: Optional[str] = None
+    quiet_end: Optional[str] = None
+    timezone_offset_minutes: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class NotificationPreferenceUpdate(BaseModel):
+    push_enabled: Optional[bool] = None
+    email_enabled: Optional[bool] = None
+    muted_object_types: Optional[list[str]] = None
+    quiet_hours_enabled: Optional[bool] = None
+    quiet_start: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    quiet_end: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone_offset_minutes: Optional[int] = Field(default=None, ge=-840, le=840)
+
+
 class NotificationRuleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     object_types: list[str] = Field(default_factory=list)

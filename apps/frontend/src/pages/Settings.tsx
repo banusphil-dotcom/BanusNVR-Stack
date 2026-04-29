@@ -1117,6 +1117,23 @@ interface PushDevice {
   is_current: boolean;
 }
 
+interface NotificationPreferences {
+  push_enabled: boolean;
+  email_enabled: boolean;
+  muted_object_types: string[];
+  quiet_hours_enabled: boolean;
+  quiet_start: string | null;
+  quiet_end: string | null;
+  timezone_offset_minutes: number;
+}
+
+const MUTE_GROUPS: { key: string; label: string }[] = [
+  { key: "person", label: "People" },
+  { key: "pet", label: "Pets" },
+  { key: "vehicle", label: "Vehicles" },
+  { key: "motion", label: "Motion" },
+];
+
 const PUSH_ENDPOINT_KEY = "banusnvr.push.endpoint";
 
 function detectDeviceName(): string {
@@ -1154,6 +1171,27 @@ function NotificationSettings() {
     enabled: expanded,
     refetchOnWindowFocus: false,
   });
+
+  const { data: prefs } = useQuery<NotificationPreferences>({
+    queryKey: ["notification-preferences"],
+    queryFn: () => api.get<NotificationPreferences>("/api/notifications/preferences"),
+    enabled: expanded,
+    refetchOnWindowFocus: false,
+  });
+
+  const updatePrefs = useMutation({
+    mutationFn: (patch: Partial<NotificationPreferences>) =>
+      api.put<NotificationPreferences>("/api/notifications/preferences", patch),
+    onSuccess: (data) => qc.setQueryData(["notification-preferences"], data),
+  });
+
+  const toggleMutedType = (group: string) => {
+    if (!prefs) return;
+    const muted = new Set(prefs.muted_object_types || []);
+    if (muted.has(group)) muted.delete(group);
+    else muted.add(group);
+    updatePrefs.mutate({ muted_object_types: Array.from(muted) });
+  };
 
   const subscribePush = async () => {
     try {
@@ -1369,6 +1407,109 @@ function NotificationSettings() {
                 </li>
               ))}
             </ul>
+          </div>
+
+          <div className="border-t border-slate-800 pt-3 space-y-3">
+            <h4 className="text-xs font-semibold text-slate-300">Preferences</h4>
+            {!prefs && <p className="text-xs text-slate-500">Loading…</p>}
+            {prefs && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={prefs.push_enabled}
+                      onChange={(e) => updatePrefs.mutate({ push_enabled: e.target.checked })}
+                    />
+                    Push enabled
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={prefs.email_enabled}
+                      onChange={(e) => updatePrefs.mutate({ email_enabled: e.target.checked })}
+                    />
+                    Email enabled
+                  </label>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                    Mute event types
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {MUTE_GROUPS.map((g) => {
+                      const muted = (prefs.muted_object_types || []).includes(g.key);
+                      return (
+                        <button
+                          key={g.key}
+                          type="button"
+                          onClick={() => toggleMutedType(g.key)}
+                          className={`px-2 py-1 rounded text-xs border ${
+                            muted
+                              ? "border-red-700 bg-red-950/40 text-red-300"
+                              : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600"
+                          }`}
+                        >
+                          {muted ? "🔕" : "🔔"} {g.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={prefs.quiet_hours_enabled}
+                      onChange={(e) => {
+                        const tz = -new Date().getTimezoneOffset();
+                        updatePrefs.mutate({
+                          quiet_hours_enabled: e.target.checked,
+                          timezone_offset_minutes: tz,
+                          quiet_start: prefs.quiet_start || "22:00",
+                          quiet_end: prefs.quiet_end || "07:00",
+                        });
+                      }}
+                    />
+                    Quiet hours (silence all notifications during a daily window)
+                  </label>
+                  {prefs.quiet_hours_enabled && (
+                    <div className="grid grid-cols-2 gap-2 pl-5">
+                      <div>
+                        <label className="label text-[11px]">From</label>
+                        <input
+                          type="time"
+                          className="input"
+                          value={prefs.quiet_start || "22:00"}
+                          onChange={(e) =>
+                            updatePrefs.mutate({
+                              quiet_start: e.target.value,
+                              timezone_offset_minutes: -new Date().getTimezoneOffset(),
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="label text-[11px]">To</label>
+                        <input
+                          type="time"
+                          className="input"
+                          value={prefs.quiet_end || "07:00"}
+                          onChange={(e) =>
+                            updatePrefs.mutate({
+                              quiet_end: e.target.value,
+                              timezone_offset_minutes: -new Date().getTimezoneOffset(),
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="border-t border-slate-800 pt-3">

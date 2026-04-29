@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -18,9 +18,52 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from models.database import async_session
-from models.schemas import NotificationRule, PushSubscription, SentNotification, User
+from models.schemas import NotificationPreference, NotificationRule, PushSubscription, SentNotification, User
 
 logger = logging.getLogger(__name__)
+
+
+# Maps a raw detector class to logical groups the user can mute. The raw
+# class itself is also considered (e.g. muting "car" specifically works).
+_OBJECT_TYPE_GROUPS: dict[str, tuple[str, ...]] = {
+    "person": ("person",),
+    "cat": ("pet",),
+    "dog": ("pet",),
+    "bird": ("pet",),
+    "car": ("vehicle",),
+    "truck": ("vehicle",),
+    "bus": ("vehicle",),
+    "motorcycle": ("vehicle",),
+    "bicycle": ("vehicle",),
+    "motion": ("motion",),
+}
+
+
+def _is_muted(object_type: str, muted: list[str]) -> bool:
+    if not muted or not object_type:
+        return False
+    muted_set = {m.lower() for m in muted}
+    ot = object_type.lower()
+    if ot in muted_set:
+        return True
+    for grp in _OBJECT_TYPE_GROUPS.get(ot, ()):
+        if grp in muted_set:
+            return True
+    return False
+
+
+def _in_quiet_hours(pref: "NotificationPreference") -> bool:
+    if not pref.quiet_hours_enabled or not pref.quiet_start or not pref.quiet_end:
+        return False
+    local = datetime.now(timezone.utc) + timedelta(minutes=pref.timezone_offset_minutes or 0)
+    current = local.strftime("%H:%M")
+    start, end = pref.quiet_start, pref.quiet_end
+    if start == end:
+        return False
+    if start < end:
+        return start <= current < end
+    # Overnight window (e.g. 22:00 -> 07:00)
+    return current >= start or current < end
 
 
 class NotificationEngine:
@@ -53,6 +96,19 @@ class NotificationEngine:
                 )
                 for r in rows
             ]
+
+    async def _fetch_preferences(self, user_id: int) -> NotificationPreference:
+        """Return user prefs, creating a default row on first access."""
+        async with async_session() as session:
+            pref = (await session.execute(
+                select(NotificationPreference).where(NotificationPreference.user_id == user_id)
+            )).scalar_one_or_none()
+            if pref is None:
+                pref = NotificationPreference(user_id=user_id)
+                session.add(pref)
+                await session.commit()
+                await session.refresh(pref)
+            return pref
 
     async def evaluate_and_notify(
         self,
@@ -163,9 +219,19 @@ class NotificationEngine:
         # Build smart title and body
         title, body = self._build_smart_message(names, camera_name, object_type)
 
+        # Apply per-user preferences: object-type mute + quiet hours act as
+        # global gates *before* per-rule channel logic.
+        pref = await self._fetch_preferences(user.id)
+        if _is_muted(object_type, pref.muted_object_types or []):
+            logger.debug("Notification suppressed by user mute (user=%d type=%s)", user.id, object_type)
+            return
+        if _in_quiet_hours(pref):
+            logger.debug("Notification suppressed by quiet hours (user=%d)", user.id)
+            return
+
         channels = rule.channels or {}
 
-        if channels.get("push"):
+        if channels.get("push") and pref.push_enabled:
             # Dispatch to every registered device for this user. Fall back to
             # the legacy single-subscription column for users who haven't
             # re-subscribed since the multi-device migration.
@@ -186,7 +252,7 @@ class NotificationEngine:
                     user.id, event_id, "push", title, body, camera_name, object_type
                 )
 
-        if channels.get("email") and user.email:
+        if channels.get("email") and pref.email_enabled and user.email:
             asyncio.create_task(
                 self._send_email(user.email, title, body, event_id, snapshot_path)
             )

@@ -142,6 +142,39 @@ class PushSubscription(Base):
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class NotificationPreference(Base):
+    """Per-user notification preferences (one row per user).
+
+    Acts as a global gate that runs *before* per-rule channel logic:
+      - `push_enabled` / `email_enabled` are kill-switches per channel.
+      - `muted_object_types` is a list of group labels (e.g. ["pet", "vehicle"])
+        or raw detector classes (e.g. "car"); a detection is dropped if any of
+        its mapped groups match.
+      - `quiet_hours_enabled` + `quiet_start`/`quiet_end` (HH:MM) suppress all
+        notifications during the window. Compared in the user's local time
+        derived from `timezone_offset_minutes` (minutes east of UTC, matching
+        `-Date.getTimezoneOffset()` in JS).
+    """
+    __tablename__ = "notification_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    push_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    muted_object_types: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    quiet_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quiet_start: Mapped[str | None] = mapped_column(String(5), nullable=True)  # "HH:MM"
+    quiet_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    timezone_offset_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class AuditLog(Base):
     """Immutable audit trail for security-relevant actions.
 
