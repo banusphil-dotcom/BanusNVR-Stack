@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from models.database import async_session
-from models.schemas import NotificationRule, SentNotification, User
+from models.schemas import NotificationRule, PushSubscription, SentNotification, User
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,20 @@ class NotificationEngine:
         # After N repeats of the same named+camera, escalate to longer debounce
         self._escalation_threshold = 2
         self._escalated_debounce = 7200.0  # 2 hours after repeated notifications
+
+    async def _fetch_subscriptions(self, user_id: int) -> list[tuple[dict, int]]:
+        """Return [(webpush-payload, subscription_row_id), ...] for the user."""
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(PushSubscription).where(PushSubscription.user_id == user_id)
+            )).scalars().all()
+            return [
+                (
+                    {"endpoint": r.endpoint, "keys": {"p256dh": r.p256dh, "auth": r.auth}},
+                    r.id,
+                )
+                for r in rows
+            ]
 
     async def evaluate_and_notify(
         self,
@@ -151,13 +165,26 @@ class NotificationEngine:
 
         channels = rule.channels or {}
 
-        if channels.get("push") and user.push_subscription:
-            asyncio.create_task(
-                self._send_push(user.push_subscription, title, body, event_id, camera_id, user.id, snapshot_path)
-            )
-            await self._log_notification(
-                user.id, event_id, "push", title, body, camera_name, object_type
-            )
+        if channels.get("push"):
+            # Dispatch to every registered device for this user. Fall back to
+            # the legacy single-subscription column for users who haven't
+            # re-subscribed since the multi-device migration.
+            subs = (await self._fetch_subscriptions(user.id))
+            sent_any = False
+            for sub_payload, sub_id in subs:
+                asyncio.create_task(
+                    self._send_push(sub_payload, title, body, event_id, camera_id, user.id, snapshot_path, subscription_id=sub_id)
+                )
+                sent_any = True
+            if not sent_any and user.push_subscription:
+                asyncio.create_task(
+                    self._send_push(user.push_subscription, title, body, event_id, camera_id, user.id, snapshot_path)
+                )
+                sent_any = True
+            if sent_any:
+                await self._log_notification(
+                    user.id, event_id, "push", title, body, camera_name, object_type
+                )
 
         if channels.get("email") and user.email:
             asyncio.create_task(
@@ -261,8 +288,15 @@ class NotificationEngine:
     async def _send_push(
         self, subscription: dict, title: str, body: str, event_id: int,
         camera_id: int = 0, user_id: int = 0, snapshot_path: Optional[str] = None,
+        subscription_id: Optional[int] = None,
     ):
-        """Send a Web Push notification with optional snapshot image."""
+        """Send a Web Push notification with optional snapshot image.
+
+        If `subscription_id` is provided and the push service returns 410
+        Gone, only that subscription row is deleted (other devices are kept).
+        Otherwise (legacy code path) the user's `push_subscription` column is
+        cleared.
+        """
         try:
             from core.auth import create_access_token
             token = create_access_token(user_id, "push")
@@ -288,13 +322,21 @@ class NotificationEngine:
             logger.info("Push notification sent: %s", title)
         except WebPushException as e:
             if "410" in str(e):
-                logger.info("Push subscription expired (410 Gone), removing for user %d", user_id)
+                logger.info("Push subscription expired (410 Gone) for user %d", user_id)
                 try:
                     async with async_session() as session:
-                        user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-                        if user:
-                            user.push_subscription = None
-                            await session.commit()
+                        if subscription_id is not None:
+                            sub = (await session.execute(
+                                select(PushSubscription).where(PushSubscription.id == subscription_id)
+                            )).scalar_one_or_none()
+                            if sub is not None:
+                                await session.delete(sub)
+                                await session.commit()
+                        else:
+                            user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+                            if user:
+                                user.push_subscription = None
+                                await session.commit()
                 except Exception:
                     pass
             else:

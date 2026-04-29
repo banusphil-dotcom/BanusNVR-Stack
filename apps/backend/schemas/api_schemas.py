@@ -308,8 +308,27 @@ class TimelineEntry(BaseModel):
 
 
 class PushSubscription(BaseModel):
+    """Web Push registration payload sent by the browser (`subscription.toJSON()`)."""
     endpoint: str
     keys: dict
+    device_name: Optional[str] = None  # optional, sent by frontend on first registration
+
+
+class PushSubscriptionResponse(BaseModel):
+    id: int
+    endpoint: str
+    device_name: Optional[str] = None
+    user_agent: Optional[str] = None
+    created_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    is_current: bool = False  # set by router when this row matches the requesting endpoint
+
+    class Config:
+        from_attributes = True
+
+
+class PushSubscriptionRename(BaseModel):
+    device_name: str = Field(min_length=1, max_length=200)
 
 
 class NotificationRuleCreate(BaseModel):

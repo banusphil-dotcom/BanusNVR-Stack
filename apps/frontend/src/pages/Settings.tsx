@@ -10,7 +10,7 @@ import {
   Activity, Clock, Camera, ChevronDown, ChevronRight, Zap, Leaf, Scale,
   SlidersHorizontal, RotateCcw, Server, Wifi, WifiOff,
   Usb, ArrowLeftRight, AlertCircle, Timer, Hash,
-  Radio, Sun, Moon, Palette, ExternalLink,
+  Radio, Sun, Moon, Palette, ExternalLink, Trash2, Edit2, Check, X,
 } from "lucide-react";
 
 interface GlobalSettings {
@@ -1107,36 +1107,140 @@ function SliderRow({
 
 /* ═══════════════════════ Notification Settings ═══════════════════════ */
 
+interface PushDevice {
+  id: number;
+  endpoint: string;
+  device_name: string | null;
+  user_agent: string | null;
+  created_at: string | null;
+  last_used_at: string | null;
+  is_current: boolean;
+}
+
+const PUSH_ENDPOINT_KEY = "banusnvr.push.endpoint";
+
+function detectDeviceName(): string {
+  const ua = navigator.userAgent || "";
+  let browser = "Browser";
+  if (/Edg\//.test(ua)) browser = "Edge";
+  else if (/Chrome\//.test(ua) && !/Edg\//.test(ua)) browser = "Chrome";
+  else if (/Firefox\//.test(ua)) browser = "Firefox";
+  else if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) browser = "Safari";
+  let os = "Device";
+  if (/Windows NT/.test(ua)) os = "Windows";
+  else if (/Mac OS X/.test(ua)) os = "Mac";
+  else if (/Android/.test(ua)) os = "Android";
+  else if (/iPhone|iPad|iPod/.test(ua)) os = "iOS";
+  else if (/Linux/.test(ua)) os = "Linux";
+  return `${browser} on ${os}`;
+}
+
 function NotificationSettings() {
+  const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
-  const [pushEnabled, setPushEnabled] = useState(false);
   const [status, setStatus] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [currentEndpoint, setCurrentEndpoint] = useState<string>(
+    () => (typeof localStorage !== "undefined" && localStorage.getItem(PUSH_ENDPOINT_KEY)) || ""
+  );
+
+  const { data: devices = [], refetch: refetchDevices } = useQuery<PushDevice[]>({
+    queryKey: ["push-devices", currentEndpoint],
+    queryFn: () =>
+      api.get<PushDevice[]>("/api/notifications/subscriptions", {
+        headers: currentEndpoint ? { "X-Push-Endpoint": currentEndpoint } : undefined,
+      } as any),
+    enabled: expanded,
+    refetchOnWindowFocus: false,
+  });
 
   const subscribePush = async () => {
     try {
       const reg = await navigator.serviceWorker.ready;
-      const { vapid_public_key } = await api.get<{ vapid_public_key: string }>("/api/notifications/vapid-key");
+      const { vapid_public_key } = await api.get<{ vapid_public_key: string }>(
+        "/api/notifications/vapid-key"
+      );
       const keyArray = urlBase64ToUint8Array(vapid_public_key);
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: keyArray.buffer as ArrayBuffer,
       });
-      await api.post("/api/notifications/subscribe", sub.toJSON());
-      setPushEnabled(true);
-      setStatus("Push notifications enabled");
+      const payload: any = sub.toJSON();
+      payload.device_name = detectDeviceName();
+      await api.post("/api/notifications/subscribe", payload);
+      try {
+        localStorage.setItem(PUSH_ENDPOINT_KEY, payload.endpoint);
+      } catch {}
+      setCurrentEndpoint(payload.endpoint);
+      setStatus("This device is now subscribed to push notifications.");
+      qc.invalidateQueries({ queryKey: ["push-devices"] });
     } catch (err: any) {
-      setStatus(`Failed: ${err.message}`);
+      setStatus(`Failed: ${err.message || err}`);
+    }
+  };
+
+  const unsubscribeThisDevice = async () => {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      const endpoint = sub?.endpoint || currentEndpoint;
+      if (sub) await sub.unsubscribe();
+      if (endpoint) {
+        await api.delete(`/api/notifications/subscribe?endpoint=${encodeURIComponent(endpoint)}`);
+      }
+      try {
+        localStorage.removeItem(PUSH_ENDPOINT_KEY);
+      } catch {}
+      setCurrentEndpoint("");
+      setStatus("This device has been unsubscribed.");
+      qc.invalidateQueries({ queryKey: ["push-devices"] });
+    } catch (err: any) {
+      setStatus(`Failed: ${err.message || err}`);
     }
   };
 
   const testNotification = async () => {
     try {
-      await api.post("/api/notifications/test", { type: "push" });
-      setStatus("Test notification sent");
+      const result = await api.post<{ success: boolean; devices?: number }>(
+        "/api/notifications/test?channel=push",
+        {}
+      );
+      setStatus(
+        result.success
+          ? `Test sent to ${result.devices ?? 1} device${(result.devices ?? 1) === 1 ? "" : "s"}.`
+          : "Test send failed."
+      );
     } catch (err: any) {
-      setStatus(`Failed: ${err.message}`);
+      setStatus(`Failed: ${err.message || err}`);
     }
   };
+
+  const renameDevice = async (id: number) => {
+    if (!editingName.trim()) return;
+    try {
+      await api.patch(`/api/notifications/subscriptions/${id}`, {
+        device_name: editingName.trim(),
+      });
+      setEditingId(null);
+      setEditingName("");
+      refetchDevices();
+    } catch (err: any) {
+      setStatus(`Rename failed: ${err.message || err}`);
+    }
+  };
+
+  const removeDevice = async (id: number) => {
+    if (!confirm("Remove this device from push notifications?")) return;
+    try {
+      await api.delete(`/api/notifications/subscriptions/${id}`);
+      refetchDevices();
+    } catch (err: any) {
+      setStatus(`Remove failed: ${err.message || err}`);
+    }
+  };
+
+  const isCurrentRegistered = devices.some((d) => d.is_current);
 
   return (
     <div className="space-y-3">
@@ -1149,11 +1253,124 @@ function NotificationSettings() {
 
       {expanded && (
         <div className="card space-y-3">
-          <div className="flex gap-2">
-            <button onClick={subscribePush} className="btn-primary text-sm">Enable Push</button>
-            <button onClick={testNotification} className="btn-secondary text-sm">Test</button>
+          <div className="flex flex-wrap gap-2">
+            {!isCurrentRegistered && (
+              <button onClick={subscribePush} className="btn-primary text-sm">
+                Enable on this device
+              </button>
+            )}
+            {isCurrentRegistered && (
+              <button onClick={unsubscribeThisDevice} className="btn-secondary text-sm">
+                Disable on this device
+              </button>
+            )}
+            <button onClick={testNotification} className="btn-secondary text-sm">
+              Test all devices
+            </button>
           </div>
           {status && <p className="text-xs text-slate-400">{status}</p>}
+
+          <div className="border-t border-slate-800 pt-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                <Smartphone size={12} /> My devices ({devices.length})
+              </h4>
+            </div>
+            {devices.length === 0 && (
+              <p className="text-xs text-slate-500">
+                No devices subscribed yet. Click "Enable on this device" to add one.
+              </p>
+            )}
+            <ul className="space-y-1.5">
+              {devices.map((d) => (
+                <li
+                  key={d.id}
+                  className={`flex items-center gap-2 p-2 rounded border text-xs ${
+                    d.is_current
+                      ? "border-blue-700 bg-blue-950/30"
+                      : "border-slate-800 bg-slate-900/50"
+                  }`}
+                >
+                  <Smartphone size={14} className={d.is_current ? "text-blue-400" : "text-slate-500"} />
+                  <div className="flex-1 min-w-0">
+                    {editingId === d.id ? (
+                      <div className="flex gap-1">
+                        <input
+                          autoFocus
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") renameDevice(d.id);
+                            if (e.key === "Escape") {
+                              setEditingId(null);
+                              setEditingName("");
+                            }
+                          }}
+                          className="flex-1 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs"
+                          maxLength={200}
+                        />
+                        <button
+                          onClick={() => renameDevice(d.id)}
+                          className="text-green-400 hover:text-green-300"
+                          title="Save"
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingId(null);
+                            setEditingName("");
+                          }}
+                          className="text-slate-400 hover:text-slate-300"
+                          title="Cancel"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="font-medium truncate flex items-center gap-1.5">
+                          {d.device_name || "Unnamed device"}
+                          {d.is_current && (
+                            <span className="text-[10px] uppercase tracking-wide text-blue-400">
+                              this device
+                            </span>
+                          )}
+                        </div>
+                        {d.last_used_at && (
+                          <div className="text-[10px] text-slate-500">
+                            Last used {new Date(d.last_used_at).toLocaleString()}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  {editingId !== d.id && (
+                    <>
+                      <button
+                        onClick={() => {
+                          setEditingId(d.id);
+                          setEditingName(d.device_name || "");
+                        }}
+                        className="text-slate-400 hover:text-slate-200"
+                        title="Rename"
+                      >
+                        <Edit2 size={14} />
+                      </button>
+                      <button
+                        onClick={() => removeDevice(d.id)}
+                        className="text-red-400 hover:text-red-300"
+                        title="Remove"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+
           <div className="border-t border-slate-800 pt-3">
             <p className="text-xs text-slate-500 flex items-center gap-1.5">
               <Mail size={12} /> Email: Configure SMTP in Storage settings

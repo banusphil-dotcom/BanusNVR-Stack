@@ -80,7 +80,8 @@ async function tryRefresh(): Promise<boolean> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, init?: { headers?: Record<string, string> }) =>
+    request<T>(path, init),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body instanceof FormData ? body : JSON.stringify(body) }),
   put: <T>(path: string, body?: unknown) =>

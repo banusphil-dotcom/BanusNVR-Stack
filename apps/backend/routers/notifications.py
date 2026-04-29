@@ -1,6 +1,8 @@
 """BanusNas — Notifications API: push subscriptions, rules, history."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,13 +11,15 @@ from sqlalchemy import func
 from core.auth import get_current_user
 from core.config import settings
 from models.database import get_session
-from models.schemas import NotificationRule, SentNotification, User
+from models.schemas import NotificationRule, PushSubscription as PushSubscriptionRow, SentNotification, User
 from schemas.api_schemas import (
     NotificationHistoryPage,
     NotificationRuleCreate,
     NotificationRuleResponse,
     NotificationRuleUpdate,
     PushSubscription,
+    PushSubscriptionRename,
+    PushSubscriptionResponse,
     SentNotificationResponse,
 )
 from services.notification_engine import notification_engine
@@ -32,26 +36,154 @@ async def get_vapid_key():
 @router.post("/subscribe")
 async def subscribe_push(
     data: PushSubscription,
+    request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Register a Web Push subscription for the current user."""
-    user.push_subscription = {"endpoint": data.endpoint, "keys": data.keys}
+    """Register a Web Push subscription for the current user's device.
+
+    Each device produces a unique `endpoint`. We upsert by endpoint so a
+    re-registration from the same browser refreshes keys/last_used_at
+    instead of duplicating a row. Other devices for the same user are
+    untouched.
+    """
+    p256dh = (data.keys or {}).get("p256dh") or ""
+    auth_k = (data.keys or {}).get("auth") or ""
+    if not data.endpoint or not p256dh or not auth_k:
+        raise HTTPException(status_code=400, detail="Invalid push subscription payload")
+
+    user_agent = (request.headers.get("user-agent") or "")[:500] or None
+
+    existing = (await session.execute(
+        select(PushSubscriptionRow).where(PushSubscriptionRow.endpoint == data.endpoint)
+    )).scalar_one_or_none()
+
+    if existing is not None:
+        # If the endpoint was previously registered to a different user, take
+        # ownership for the current user (browser may have switched accounts).
+        existing.user_id = user.id
+        existing.p256dh = p256dh
+        existing.auth = auth_k
+        if data.device_name:
+            existing.device_name = data.device_name
+        if user_agent:
+            existing.user_agent = user_agent
+        existing.last_used_at = datetime.now(timezone.utc)
+        sub = existing
+    else:
+        sub = PushSubscriptionRow(
+            user_id=user.id,
+            endpoint=data.endpoint,
+            p256dh=p256dh,
+            auth=auth_k,
+            device_name=data.device_name,
+            user_agent=user_agent,
+        )
+        session.add(sub)
+
+    # Clear the legacy single-subscription column so the engine's multi-device
+    # path is the sole source of truth.
+    user.push_subscription = None
     session.add(user)
+
     await session.commit()
-    return {"message": "Push subscription registered"}
+    await session.refresh(sub)
+    return {"message": "Push subscription registered", "id": sub.id}
 
 
 @router.delete("/subscribe")
 async def unsubscribe_push(
+    endpoint: str | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Remove Web Push subscription."""
-    user.push_subscription = None
-    session.add(user)
+    """Remove the current device's push subscription.
+
+    If `endpoint` is provided, removes that specific subscription. Otherwise
+    (legacy behaviour) removes ALL the user's subscriptions.
+    """
+    from sqlalchemy import delete as sql_delete
+    if endpoint:
+        await session.execute(
+            sql_delete(PushSubscriptionRow).where(
+                PushSubscriptionRow.user_id == user.id,
+                PushSubscriptionRow.endpoint == endpoint,
+            )
+        )
+    else:
+        await session.execute(
+            sql_delete(PushSubscriptionRow).where(PushSubscriptionRow.user_id == user.id)
+        )
+        user.push_subscription = None
+        session.add(user)
     await session.commit()
     return {"message": "Push subscription removed"}
+
+
+@router.get("/subscriptions", response_model=list[PushSubscriptionResponse])
+async def list_subscriptions(
+    request: Request,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """List all push subscriptions (devices) for the current user.
+
+    `is_current` is set to true on the row whose endpoint matches the
+    `X-Push-Endpoint` request header (sent by the frontend so the UI can
+    label the current device).
+    """
+    current_endpoint = request.headers.get("x-push-endpoint") or ""
+    rows = (await session.execute(
+        select(PushSubscriptionRow)
+        .where(PushSubscriptionRow.user_id == user.id)
+        .order_by(desc(PushSubscriptionRow.last_used_at))
+    )).scalars().all()
+    out: list[PushSubscriptionResponse] = []
+    for r in rows:
+        item = PushSubscriptionResponse.model_validate(r)
+        item.is_current = bool(current_endpoint and current_endpoint == r.endpoint)
+        out.append(item)
+    return out
+
+
+@router.patch("/subscriptions/{sub_id}", response_model=PushSubscriptionResponse)
+async def rename_subscription(
+    sub_id: int,
+    data: PushSubscriptionRename,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    sub = (await session.execute(
+        select(PushSubscriptionRow).where(
+            PushSubscriptionRow.id == sub_id,
+            PushSubscriptionRow.user_id == user.id,
+        )
+    )).scalar_one_or_none()
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    sub.device_name = data.device_name.strip()
+    session.add(sub)
+    await session.commit()
+    await session.refresh(sub)
+    return PushSubscriptionResponse.model_validate(sub)
+
+
+@router.delete("/subscriptions/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_subscription(
+    sub_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    sub = (await session.execute(
+        select(PushSubscriptionRow).where(
+            PushSubscriptionRow.id == sub_id,
+            PushSubscriptionRow.user_id == user.id,
+        )
+    )).scalar_one_or_none()
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    await session.delete(sub)
+    await session.commit()
 
 
 @router.get("/rules", response_model=list[NotificationRuleResponse])
@@ -209,12 +341,23 @@ async def clear_history(
 async def test_notification(
     channel: str = "push",
     user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ):
-    """Send a test notification."""
+    """Send a test notification to all of the user's registered devices."""
     if channel == "push":
-        if not user.push_subscription:
+        subs = (await session.execute(
+            select(PushSubscriptionRow).where(PushSubscriptionRow.user_id == user.id)
+        )).scalars().all()
+        if not subs and not user.push_subscription:
             raise HTTPException(status_code=400, detail="No push subscription registered")
-        ok = await notification_engine.send_test_push(user.push_subscription)
+        ok_any = False
+        for sub in subs:
+            payload = {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}}
+            if await notification_engine.send_test_push(payload):
+                ok_any = True
+        if not subs and user.push_subscription:
+            ok_any = await notification_engine.send_test_push(user.push_subscription)
+        return {"success": ok_any, "devices": len(subs) or (1 if user.push_subscription else 0)}
     elif channel == "email":
         ok = await notification_engine.send_test_email(user.email)
     else:
