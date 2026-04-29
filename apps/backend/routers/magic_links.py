@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timedelta, timezone
 from core.auth import create_access_token, create_refresh_token
+from core.config import settings
 from models.database import get_session
 from models.schemas import User, UserSession
 from models.magic_links import MagicLink, PasswordReset
@@ -17,6 +18,8 @@ router = APIRouter(prefix="/api/magic", tags=["magic-links"])
 
 @router.post("/login", response_model=MagicLinkResponse)
 async def request_magic_link(data: MagicLinkRequest, request: Request, session: AsyncSession = Depends(get_session)):
+    if not settings.auth_magic_links_enabled:
+        raise HTTPException(403, "Magic link login is disabled by administrator")
     result = await session.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
     if not user:
@@ -31,6 +34,8 @@ async def request_magic_link(data: MagicLinkRequest, request: Request, session: 
 
 @router.post("/verify", response_model=MagicLinkResponse)
 async def verify_magic_link(data: MagicLinkVerifyRequest, request: Request, session: AsyncSession = Depends(get_session)):
+    if not settings.auth_magic_links_enabled:
+        raise HTTPException(403, "Magic link login is disabled by administrator")
     result = await session.execute(select(MagicLink).where(MagicLink.token == data.token, MagicLink.used == False))
     link = result.scalar_one_or_none()
     if not link or link.expires_at < datetime.now(timezone.utc):

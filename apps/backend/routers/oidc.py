@@ -5,6 +5,7 @@ from sqlalchemy import select
 from datetime import datetime, timezone
 from typing import List
 from core.auth import create_access_token, create_refresh_token, get_current_user
+from core.config import settings
 from models.database import get_session
 from models.oidc import OIDCAccount
 from models.schemas import User, UserSession
@@ -37,6 +38,8 @@ async def oidc_login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_oidc_enabled:
+        raise HTTPException(403, "OIDC is disabled by administrator")
     provider = PROVIDERS.get(data.provider)
     if not provider:
         raise HTTPException(400, "Unknown provider")

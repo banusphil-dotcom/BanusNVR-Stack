@@ -1,4 +1,48 @@
 import { useState, useEffect, useRef } from "react";
+import { useMutation } from "@tanstack/react-query";
+// --- Admin Auth Toggles UI ---
+function AuthTogglesAdmin({ authSettings, refetch }: { authSettings: AuthSettings, refetch: () => void }) {
+  const [form, setForm] = useState(authSettings);
+  useEffect(() => { setForm(authSettings); }, [authSettings]);
+  const mut = useMutation({
+    mutationFn: (data: AuthSettings) => api.put("/api/auth/settings", data),
+    onSuccess: refetch,
+  });
+  const dirty = JSON.stringify(form) !== JSON.stringify(authSettings);
+  return (
+    <div className="card p-4 space-y-3 border border-blue-700/30 bg-blue-900/10">
+      <h4 className="font-semibold text-blue-400 mb-2">Authentication Methods</h4>
+      {Object.entries(form).map(([key, val]) => (
+        <label key={key} className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={!!val} onChange={e => setForm(f => ({ ...f, [key]: e.target.checked }))} />
+          {key.replace(/_/g, " ").replace("enabled", "").replace("auth ", "").replace(/\b\w/g, c => c.toUpperCase())}
+        </label>
+      ))}
+      {dirty && (
+        <button onClick={() => mut.mutate(form)} className="btn-primary mt-2" disabled={mut.isPending}>Save Auth Settings</button>
+      )}
+      {mut.isSuccess && <div className="text-emerald-400 text-xs">Saved!</div>}
+      {mut.isError && <div className="text-red-400 text-xs">Failed to save</div>}
+    </div>
+  );
+}
+import { useQuery as useReactQuery } from "@tanstack/react-query";
+// --- Global Auth Settings ---
+interface AuthSettings {
+  totp_enabled: boolean;
+  webauthn_enabled: boolean;
+  oidc_enabled: boolean;
+  api_tokens_enabled: boolean;
+  magic_links_enabled: boolean;
+}
+// Fetch global auth settings
+function useAuthSettings() {
+  return useReactQuery<AuthSettings>({
+    queryKey: ["auth-settings"],
+    queryFn: () => api.get<AuthSettings>("/api/auth/settings"),
+    staleTime: 60000,
+  });
+}
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, getToken } from "../api";
@@ -422,42 +466,48 @@ function MLServerSettings() {
   );
 }
 
-function ResourceMonitor() {
-  const [history, setHistory] = useState<HardwareResources[]>([]);
+function AccountSettings() {
+  const { user, logout, refreshProfile } = useAuth();
+  const [expanded, setExpanded] = useState(false);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [status, setStatus] = useState("");
+  const [showTOTP, setShowTOTP] = useState(false);
+  const [totpBusy, setTotpBusy] = useState(false);
+  const [totpError, setTotpError] = useState<string | null>(null);
 
-  const { data: hw } = useQuery({
-    queryKey: ["hardware-resources"],
-    queryFn: () => api.get<HardwareResources>("/api/system/resources"),
-    refetchInterval: 10000,
+  const { data: authSettings, refetch: refetchAuthSettings } = useAuthSettings();
+
+  const changeMut = useMutation({
+    mutationFn: (data: { old_password: string; new_password: string }) =>
+      api.put("/api/auth/password", data),
+    onSuccess: () => {
+      setStatus("Password updated");
+      setOldPassword("");
+      setNewPassword("");
+    },
+    onError: (err: any) => setStatus(err.message),
   });
 
-  useEffect(() => {
-    if (hw) {
-      setHistory((prev) => [...prev.slice(-59), hw]);
+  const disableTOTP = async () => {
+    setTotpBusy(true);
+    setTotpError(null);
+    try {
+      await api.post("/api/auth/totp/disable", {});
+      await refreshProfile();
+    } catch (err: any) {
+      setTotpError(err.message || "Failed to disable 2FA");
+    } finally {
+      setTotpBusy(false);
     }
-  }, [hw]);
-
-  if (!hw) return <div className="card text-slate-400 text-center py-6">Loading system resources...</div>;
-
-  const formatUptime = (s: number) => {
-    const d = Math.floor(s / 86400);
-    const h = Math.floor((s % 86400) / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    if (d > 0) return `${d}d ${h}h ${m}m`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
   };
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold flex items-center gap-2">
-          <Activity size={16} className="text-blue-400" /> System Resources
-        </h3>
-        <div className="flex items-center gap-3 text-xs text-slate-500">
-          <span className="flex items-center gap-1"><Clock size={12} /> {formatUptime(hw.uptime_seconds)}</span>
-          <span className="flex items-center gap-1"><Camera size={12} /> {hw.cameras_active} cameras</span>
-        </div>
+      {/* Admin: Auth method toggles */}
+      {user?.is_admin && authSettings && (
+        <AuthTogglesAdmin authSettings={authSettings} refetch={refetchAuthSettings} />
+      )}
       </div>
 
       {/* Resource gauges grid */}
@@ -1259,6 +1309,7 @@ function StorageSettings() {
 import TOTPSetupModal from "../components/TOTPSetupModal";
 
 function AccountSettings() {
+  const { data: authSettings } = useAuthSettings();
   const { user, logout, refreshProfile } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
@@ -1325,59 +1376,75 @@ function AccountSettings() {
           </div>
 
           {/* 2FA (TOTP) section */}
-          <div className="border-t border-slate-800 pt-3 mt-3">
-            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Shield size={14} className="text-blue-400" /> Two-Factor Authentication (2FA)
-            </h4>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {user?.totp_enabled ? (
-                <>
-                  <span className="text-emerald-400 font-medium">Enabled</span>
+          {authSettings?.totp_enabled && (
+            <div className="border-t border-slate-800 pt-3 mt-3">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                <Shield size={14} className="text-blue-400" /> Two-Factor Authentication (2FA)
+              </h4>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                {user?.totp_enabled ? (
+                  <>
+                    <span className="text-emerald-400 font-medium">Enabled</span>
+                    <button
+                      onClick={disableTOTP}
+                      className="btn-danger btn-xs w-full sm:w-auto"
+                      disabled={totpBusy}
+                    >
+                      Disable 2FA
+                    </button>
+                    {totpError && <span className="text-xs text-red-400 ml-2">{totpError}</span>}
+                  </>
+                ) : (
                   <button
-                    onClick={disableTOTP}
-                    className="btn-danger btn-xs w-full sm:w-auto"
-                    disabled={totpBusy}
+                    onClick={() => setShowTOTP(true)}
+                    className="btn-primary btn-xs w-full sm:w-auto"
                   >
-                    Disable 2FA
+                    Enable 2FA
                   </button>
-                  {totpError && <span className="text-xs text-red-400 ml-2">{totpError}</span>}
-                </>
-              ) : (
-                <button
-                  onClick={() => setShowTOTP(true)}
-                  className="btn-primary btn-xs w-full sm:w-auto"
-                >
-                  Enable 2FA
-                </button>
-              )}
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Placeholder sections for other auth methods */}
-          <div className="border-t border-slate-800 pt-3 mt-3">
-            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Shield size={14} className="text-purple-400" /> OIDC (Single Sign-On)
-            </h4>
-            <div className="text-xs text-slate-400">OIDC setup coming soon.</div>
-          </div>
-          <div className="border-t border-slate-800 pt-3 mt-3">
-            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Shield size={14} className="text-green-400" /> WebAuthn (Passkeys)
-            </h4>
-            <div className="text-xs text-slate-400">WebAuthn setup coming soon.</div>
-          </div>
-          <div className="border-t border-slate-800 pt-3 mt-3">
-            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Shield size={14} className="text-yellow-400" /> API Tokens
-            </h4>
-            <div className="text-xs text-slate-400">API token management coming soon.</div>
-          </div>
-          <div className="border-t border-slate-800 pt-3 mt-3">
-            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Shield size={14} className="text-pink-400" /> Magic Links
-            </h4>
-            <div className="text-xs text-slate-400">Magic link login coming soon.</div>
-          </div>
+          {/* WebAuthn (Passkeys) section */}
+          {authSettings?.webauthn_enabled && (
+            <div className="border-t border-slate-800 pt-3 mt-3">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                <Shield size={14} className="text-green-400" /> WebAuthn (Passkeys)
+              </h4>
+              <div className="text-xs text-slate-400">WebAuthn setup coming soon.</div>
+            </div>
+          )}
+
+          {/* OIDC section */}
+          {authSettings?.oidc_enabled && (
+            <div className="border-t border-slate-800 pt-3 mt-3">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                <Shield size={14} className="text-purple-400" /> OIDC (Single Sign-On)
+              </h4>
+              <div className="text-xs text-slate-400">OIDC setup coming soon.</div>
+            </div>
+          )}
+
+          {/* API Tokens section */}
+          {authSettings?.api_tokens_enabled && (
+            <div className="border-t border-slate-800 pt-3 mt-3">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                <Shield size={14} className="text-yellow-400" /> API Tokens
+              </h4>
+              <div className="text-xs text-slate-400">API token management coming soon.</div>
+            </div>
+          )}
+
+          {/* Magic Links section */}
+          {authSettings?.magic_links_enabled && (
+            <div className="border-t border-slate-800 pt-3 mt-3">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                <Shield size={14} className="text-pink-400" /> Magic Links
+              </h4>
+              <div className="text-xs text-slate-400">Magic link login coming soon.</div>
+            </div>
+          )}
 
           {showTOTP && <TOTPSetupModal onClose={() => { setShowTOTP(false); refreshProfile(); }} />}
 

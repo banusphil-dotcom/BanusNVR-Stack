@@ -5,6 +5,7 @@ from sqlalchemy import select
 from datetime import datetime, timezone
 from typing import List
 from core.auth import get_current_user
+from core.config import settings
 from models.database import get_session
 from models.webauthn import WebAuthnCredential
 from models.schemas import User
@@ -19,6 +20,8 @@ async def register_credential(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_webauthn_enabled:
+        raise HTTPException(403, "WebAuthn is disabled by administrator")
     cred = WebAuthnCredential(
         user_id=user.id,
         name=data.name,
@@ -45,6 +48,8 @@ async def list_credentials(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_webauthn_enabled:
+        raise HTTPException(403, "WebAuthn is disabled by administrator")
     result = await session.execute(select(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id))
     creds = result.scalars().all()
     return WebAuthnCredentialListResponse(credentials=[
@@ -64,6 +69,8 @@ async def delete_credential(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_webauthn_enabled:
+        raise HTTPException(403, "WebAuthn is disabled by administrator")
     result = await session.execute(select(WebAuthnCredential).where(WebAuthnCredential.id == credential_id, WebAuthnCredential.user_id == user.id))
     cred = result.scalar_one_or_none()
     if not cred:

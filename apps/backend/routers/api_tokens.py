@@ -5,6 +5,7 @@ from sqlalchemy import select
 from datetime import datetime, timezone
 from typing import List
 from core.auth import get_current_user, hash_password
+from core.config import settings
 from models.database import get_session
 from models.api_tokens import APIToken
 from models.schemas import User
@@ -19,6 +20,8 @@ async def create_token(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_api_tokens_enabled:
+        raise HTTPException(403, "API tokens are disabled by administrator")
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     scopes = ",".join(data.scopes or [])
@@ -48,6 +51,8 @@ async def list_tokens(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_api_tokens_enabled:
+        raise HTTPException(403, "API tokens are disabled by administrator")
     result = await session.execute(select(APIToken).where(APIToken.user_id == user.id))
     tokens = result.scalars().all()
     return APITokenListResponse(tokens=[
@@ -68,6 +73,8 @@ async def revoke_token(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_api_tokens_enabled:
+        raise HTTPException(403, "API tokens are disabled by administrator")
     result = await session.execute(select(APIToken).where(APIToken.id == token_id, APIToken.user_id == user.id))
     token = result.scalar_one_or_none()
     if not token:

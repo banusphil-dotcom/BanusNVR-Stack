@@ -1,3 +1,28 @@
+from fastapi import Body
+from models.schemas import UserRole
+from pydantic import BaseModel
+# Update global auth settings (admin only)
+class AuthSettingsUpdate(BaseModel):
+    totp_enabled: bool
+    webauthn_enabled: bool
+    oidc_enabled: bool
+    api_tokens_enabled: bool
+    magic_links_enabled: bool
+
+@router.put("/settings")
+async def update_auth_settings(
+    data: AuthSettingsUpdate = Body(...),
+    user: User = Depends(get_current_user),
+):
+    if not user.is_admin and user.role != UserRole.admin.value:
+        raise HTTPException(403, "Admin only")
+    # Update settings in environment (for demo: update in-memory only)
+    settings.auth_totp_enabled = data.totp_enabled
+    settings.auth_webauthn_enabled = data.webauthn_enabled
+    settings.auth_oidc_enabled = data.oidc_enabled
+    settings.auth_api_tokens_enabled = data.api_tokens_enabled
+    settings.auth_magic_links_enabled = data.magic_links_enabled
+    return {"success": True}
 """BanusNas — Auth API: login, register, refresh, profile, sessions."""
 
 from datetime import datetime, timezone
@@ -42,9 +67,12 @@ class TOTPSetupResponse(BaseModel):
     secret: str
     uri: str
 
+
 @router.post("/totp/setup", response_model=TOTPSetupResponse)
 async def totp_setup(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     """Begin TOTP setup: returns secret and provisioning URI."""
+    if not settings.auth_totp_enabled:
+        raise HTTPException(403, "TOTP is disabled by administrator")
     if user.totp_enabled:
         raise HTTPException(400, "TOTP already enabled")
     secret = generate_totp_secret()
@@ -57,12 +85,15 @@ async def totp_setup(user: User = Depends(get_current_user), session: AsyncSessi
 class TOTPVerifyRequest(BaseModel):
     token: str
 
+
 @router.post("/totp/verify")
 async def totp_verify(
     data: TOTPVerifyRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_totp_enabled:
+        raise HTTPException(403, "TOTP is disabled by administrator")
     if not user.totp_secret:
         raise HTTPException(400, "No TOTP secret set up")
     if not verify_totp(data.token, user.totp_secret):
@@ -73,8 +104,11 @@ async def totp_verify(
     return {"message": "TOTP enabled"}
 
 
+
 @router.post("/totp/disable")
 async def totp_disable(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    if not settings.auth_totp_enabled:
+        raise HTTPException(403, "TOTP is disabled by administrator")
     user.totp_enabled = False
     user.totp_secret = None
     session.add(user)
@@ -223,6 +257,17 @@ async def login(
     if user.totp_enabled:
         # Issue a temp token (JWT with type=totp)
         from core.config import settings
+        from fastapi.responses import JSONResponse
+        @router.get("/settings")
+        async def get_auth_settings():
+            """Return global authentication method toggles."""
+            return JSONResponse({
+                "totp_enabled": settings.auth_totp_enabled,
+                "webauthn_enabled": settings.auth_webauthn_enabled,
+                "oidc_enabled": settings.auth_oidc_enabled,
+                "api_tokens_enabled": settings.auth_api_tokens_enabled,
+                "magic_links_enabled": settings.auth_magic_links_enabled,
+            })
         from jose import jwt
         from jose.exceptions import JWTError
         from datetime import timedelta, datetime, timezone
@@ -254,12 +299,15 @@ class TOTPLoginRequest(BaseModel):
     temp_token: str
     token: str
 
+
 @router.post("/login/totp", response_model=LoginResponse)
 async def login_totp(
     data: TOTPLoginRequest,
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    if not settings.auth_totp_enabled:
+        raise HTTPException(403, "TOTP is disabled by administrator")
     # Validate temp token
     from core.config import settings
     from jose import jwt
