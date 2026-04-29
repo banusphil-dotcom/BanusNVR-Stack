@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 // --- Admin Auth Toggles UI ---
 function AuthTogglesAdmin({ authSettings, refetch }: { authSettings: AuthSettings, refetch: () => void }) {
   const [form, setForm] = useState(authSettings);
@@ -25,8 +25,6 @@ function AuthTogglesAdmin({ authSettings, refetch }: { authSettings: AuthSetting
       {mut.isError && <div className="text-red-400 text-xs">Failed to save</div>}
     </div>
   );
-}
-import { useQuery as useReactQuery } from "@tanstack/react-query";
 // --- Global Auth Settings ---
 interface AuthSettings {
   totp_enabled: boolean;
@@ -35,26 +33,7 @@ interface AuthSettings {
   api_tokens_enabled: boolean;
   magic_links_enabled: boolean;
 }
-// Fetch global auth settings
-function useAuthSettings() {
-  return useReactQuery<AuthSettings>({
-    queryKey: ["auth-settings"],
-    queryFn: () => api.get<AuthSettings>("/api/auth/settings"),
-    staleTime: 60000,
-  });
-}
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-function AccountSettings() {
-  const { user, logout, refreshProfile } = useAuth();
-  const [expanded, setExpanded] = useState(false);
-  const [oldPassword, setOldPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [status, setStatus] = useState("");
-  const [showTOTP, setShowTOTP] = useState(false);
-  const [totpBusy, setTotpBusy] = useState(false);
-  const [totpError, setTotpError] = useState<string | null>(null);
 
-  const { data: authSettings, refetch: refetchAuthSettings } = useAuthSettings();
 
   const changeMut = useMutation({
     mutationFn: (data: { old_password: string; new_password: string }) =>
@@ -70,22 +49,22 @@ function AccountSettings() {
   const disableTOTP = async () => {
     setTotpBusy(true);
     setTotpError(null);
-    try {
-      await api.post("/api/auth/totp/disable", {});
-      await refreshProfile();
-    } catch (err: any) {
-      setTotpError(err.message || "Failed to disable 2FA");
-    } finally {
-      setTotpBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      {/* Admin: Auth method toggles */}
-      {user?.is_admin && authSettings && (
-        <AuthTogglesAdmin authSettings={authSettings} refetch={refetchAuthSettings} />
-      )}
+    return (
+      <div className="space-y-3">
+        <h4 className="font-semibold text-blue-400 mb-2">Authentication Methods</h4>
+        {Object.entries(form).map(([key, val]) => (
+          <label key={key} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={!!val} onChange={e => setForm(f => ({ ...f, [key]: e.target.checked }))} />
+            {key.replace(/_/g, " ").replace("enabled", "").replace("auth ", "").replace(/\b\w/g, c => c.toUpperCase())}
+          </label>
+        ))}
+        {dirty && (
+          <button onClick={() => mut.mutate(form)} className="btn-primary mt-2" disabled={mut.isPending}>Save Auth Settings</button>
+        )}
+        {mut.isSuccess && <div className="text-emerald-400 text-xs">Saved!</div>}
+        {mut.isError && <div className="text-red-400 text-xs">Failed to save</div>}
+      </div>
+    );
 
       {/* Resource gauges grid */}
       <div className="grid grid-cols-3 gap-3">
@@ -100,11 +79,10 @@ function AccountSettings() {
         <ResourceGauge
           label="GPU"
           value={hw.gpu_percent ?? 0}
-          icon={<Monitor size={14} />}
-          detail={hw.gpu_inference_device === "GPU" ? "OpenVINO" : hw.gpu_available ? "Idle" : "N/A"}
-          history={history.map((h) => h.gpu_percent ?? 0)}
-          color="emerald"
-          badge={hw.gpu_inference_device === "GPU" ? "ACTIVE" : undefined}
+              icon={<Monitor size={14} />}
+              detail={hw.gpu_inference_device === "GPU" ? "OpenVINO" : hw.gpu_available ? "Idle" : "N/A"}
+              color="emerald"
+              badge={hw.gpu_inference_device === "GPU" ? "ACTIVE" : undefined}
         />
         <ResourceGauge
           label="RAM"
@@ -159,11 +137,10 @@ function AccountSettings() {
               {w.message}
             </div>
           ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+          </div>
+        ) : null}
+      </div>
+    );
 
 /* ═══════════════════════ Coral Edge TPU Status ═══════════════════════ */
 
@@ -459,7 +436,7 @@ function MLServerSettings() {
   );
 }
 
-function AccountSettings() {
+// Duplicate AccountSettings removed
   const { user, logout, refreshProfile } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
@@ -570,7 +547,6 @@ function AccountSettings() {
           ) : null}
         </div>
       );
-}
 }
 
 function ResourceGauge({
@@ -1292,7 +1268,7 @@ function StorageSettings() {
 
 import TOTPSetupModal from "../components/TOTPSetupModal";
 
-function AccountSettings() {
+// Duplicate AccountSettings removed
   const { data: authSettings } = useAuthSettings();
   const { user, logout, refreshProfile } = useAuth();
   const [expanded, setExpanded] = useState(false);
