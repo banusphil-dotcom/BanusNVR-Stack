@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
+from core.vapid import ensure_vapid_keys
 from models.database import init_db, get_session, async_session
 from models.schemas import NotificationRule, User as UserModel
 from sqlalchemy import select
@@ -44,9 +45,21 @@ async def lifespan(app: FastAPI):
     """
     logger.info("BanusNas NVR v2 (Frigate) starting up...")
 
+
     # Database
     await init_db()
     logger.info("Database initialized")
+
+    # Ensure VAPID keys exist in DB and load into settings
+    from models.database import async_session
+    async with async_session() as session:
+        vapid_keys = await ensure_vapid_keys(session, settings.vapid_claim_email)
+        # Patch settings with DB keys if present
+        if vapid_keys:
+            settings.vapid_public_key = vapid_keys["public_key"]
+            settings.vapid_private_key = vapid_keys["private_key"]
+            settings.vapid_claim_email = vapid_keys["claim_email"]
+    logger.info("VAPID keys loaded: %s...", settings.vapid_public_key[:16] if settings.vapid_public_key else None)
 
     # Schema migration: add body_embedding column if missing
     async with async_session() as session:
