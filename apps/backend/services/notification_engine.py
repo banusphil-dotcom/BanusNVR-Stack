@@ -98,17 +98,34 @@ class NotificationEngine:
             ]
 
     async def _fetch_preferences(self, user_id: int) -> NotificationPreference:
-        """Return user prefs, creating a default row on first access."""
-        async with async_session() as session:
-            pref = (await session.execute(
-                select(NotificationPreference).where(NotificationPreference.user_id == user_id)
-            )).scalar_one_or_none()
-            if pref is None:
-                pref = NotificationPreference(user_id=user_id)
-                session.add(pref)
-                await session.commit()
-                await session.refresh(pref)
-            return pref
+        """Return user prefs, creating a default row on first access.
+
+        On any failure (e.g. table missing on a freshly-upgraded install
+        before `Base.metadata.create_all` has run, or a transient DB error)
+        we fall back to a default in-memory instance so notifications are
+        never silently dropped because the prefs lookup failed.
+        """
+        try:
+            async with async_session() as session:
+                pref = (await session.execute(
+                    select(NotificationPreference).where(NotificationPreference.user_id == user_id)
+                )).scalar_one_or_none()
+                if pref is None:
+                    pref = NotificationPreference(user_id=user_id)
+                    session.add(pref)
+                    await session.commit()
+                    await session.refresh(pref)
+                return pref
+        except Exception as e:
+            logger.warning("NotificationPreference fetch failed for user=%d: %s — using defaults", user_id, e)
+            return NotificationPreference(
+                user_id=user_id,
+                push_enabled=True,
+                email_enabled=True,
+                muted_object_types=[],
+                quiet_hours_enabled=False,
+                timezone_offset_minutes=0,
+            )
 
     async def evaluate_and_notify(
         self,
@@ -134,21 +151,24 @@ class NotificationEngine:
                 if not self._check_schedule(rule):
                     continue
 
-                # Debounce — use longer window for named objects to reduce spam
-                # Escalates to 2hr debounce after repeated notifications for same entity
+                # Debounce — respects rule.debounce_seconds. Named objects no
+                # longer get a hidden 30 min floor (that suppressed legitimate
+                # notifications and looked like a broken pipeline). Escalation
+                # only kicks in after several repeats *within* the rule window.
                 debounce_key = f"{rule.id}_{named_object_id or object_type}_{camera_id}"
                 now = time.monotonic()
                 last = self._debounce_cache.get(debounce_key, 0)
                 repeat_count = self._debounce_repeat.get(debounce_key, 0)
-                if named_object_id:
-                    base_debounce = max(rule.debounce_seconds, self._named_presence_debounce)
-                    if repeat_count >= self._escalation_threshold:
-                        effective_debounce = self._escalated_debounce
-                    else:
-                        effective_debounce = base_debounce
+                base_debounce = rule.debounce_seconds
+                if named_object_id and repeat_count >= self._escalation_threshold:
+                    effective_debounce = max(base_debounce, self._escalated_debounce)
                 else:
-                    effective_debounce = rule.debounce_seconds
+                    effective_debounce = base_debounce
                 if (now - last) < effective_debounce:
+                    logger.debug(
+                        "Notification debounced (rule=%d key=%s remaining=%.0fs)",
+                        rule.id, debounce_key, effective_debounce - (now - last),
+                    )
                     continue
                 self._debounce_cache[debounce_key] = now
                 # Track repeat count — reset if >4hr since last notification
@@ -236,6 +256,10 @@ class NotificationEngine:
             # the legacy single-subscription column for users who haven't
             # re-subscribed since the multi-device migration.
             subs = (await self._fetch_subscriptions(user.id))
+            logger.info(
+                "Push dispatch: user=%d devices=%d legacy=%s title=%r",
+                user.id, len(subs), bool(user.push_subscription), title,
+            )
             sent_any = False
             for sub_payload, sub_id in subs:
                 asyncio.create_task(
@@ -385,7 +409,7 @@ class NotificationEngine:
                 vapid_private_key=settings.vapid_private_key,
                 vapid_claims={"sub": settings.vapid_claim_email},
             )
-            logger.info("Push notification sent: %s", title)
+            logger.info("Push notification sent (user=%d sub=%s): %s", user_id, subscription_id, title)
         except WebPushException as e:
             if "410" in str(e):
                 logger.info("Push subscription expired (410 Gone) for user %d", user_id)

@@ -834,25 +834,44 @@ class FrigateBridge:
             if (existing and existing["event_id"] != event_id
                     and time.time() - existing["last_ts"] <= CONSOLIDATION_IDLE_S):
                 merge_target = existing["event_id"]
-                merged = await self._merge_into_existing(
-                    source_id=event_id, target_id=merge_target,
-                    camera_id=camera_id, label=label, frigate_id=frigate_id,
-                )
-                if merged:
-                    self._event_map[frigate_id] = merge_target
-                    existing["last_ts"] = time.time()
-                    existing["camera_id"] = camera_id  # track latest camera
-                    # Remove unknown cache entry for source event
-                    unknown_key = (camera_id, label, 0)
-                    unk = self._recent_events.get(unknown_key)
-                    if unk and unk["event_id"] == event_id:
-                        del self._recent_events[unknown_key]
-                    cam_f = _camera_id_to_friendly.get(camera_id, f"camera_{camera_id}")
-                    consol = (existing.get("consolidated") or 1) + 1
-                    logger.info("Person merge: #%d → #%d (%s on %s, ×%d)",
-                                event_id, merge_target, named_object_name, cam_f, consol)
-                    await self._set_frigate_sub_label(frigate_id, named_object_name)
-                    return
+                # Hard cap: don't merge into an event that's already been
+                # running longer than MAX_EVENT_DURATION_S. Without this,
+                # a recognized person who is repeatedly detected every
+                # <3 min produces a single event spanning many hours
+                # ("Philip has been here for 24 hours non-stop").
+                target_too_old = False
+                async with async_session() as session:
+                    target_ev = await session.get(Event, merge_target)
+                    if target_ev is None:
+                        target_too_old = True  # event vanished — drop cache
+                    elif target_ev.started_at:
+                        ev_age = time.time() - target_ev.started_at.timestamp()
+                        if ev_age > MAX_EVENT_DURATION_S:
+                            target_too_old = True
+                if target_too_old:
+                    # Forget stale cache so the new event stands alone and
+                    # subsequent detections start fresh.
+                    del self._recent_events[named_key]
+                else:
+                    merged = await self._merge_into_existing(
+                        source_id=event_id, target_id=merge_target,
+                        camera_id=camera_id, label=label, frigate_id=frigate_id,
+                    )
+                    if merged:
+                        self._event_map[frigate_id] = merge_target
+                        existing["last_ts"] = time.time()
+                        existing["camera_id"] = camera_id  # track latest camera
+                        # Remove unknown cache entry for source event
+                        unknown_key = (camera_id, label, 0)
+                        unk = self._recent_events.get(unknown_key)
+                        if unk and unk["event_id"] == event_id:
+                            del self._recent_events[unknown_key]
+                        cam_f = _camera_id_to_friendly.get(camera_id, f"camera_{camera_id}")
+                        consol = (existing.get("consolidated") or 1) + 1
+                        logger.info("Person merge: #%d → #%d (%s on %s, ×%d)",
+                                    event_id, merge_target, named_object_name, cam_f, consol)
+                        await self._set_frigate_sub_label(frigate_id, named_object_name)
+                        return
 
         # Update consolidation cache: promote unknown → named so future detections merge
         self._update_consolidation_cache(
