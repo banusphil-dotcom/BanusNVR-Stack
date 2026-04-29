@@ -1,33 +1,8 @@
-from fastapi import Body
-from models.schemas import UserRole
-from pydantic import BaseModel
-# Update global auth settings (admin only)
-class AuthSettingsUpdate(BaseModel):
-    totp_enabled: bool
-    webauthn_enabled: bool
-    oidc_enabled: bool
-    api_tokens_enabled: bool
-    magic_links_enabled: bool
-
-@router.put("/settings")
-async def update_auth_settings(
-    data: AuthSettingsUpdate = Body(...),
-    user: User = Depends(get_current_user),
-):
-    if not user.is_admin and user.role != UserRole.admin.value:
-        raise HTTPException(403, "Admin only")
-    # Update settings in environment (for demo: update in-memory only)
-    settings.auth_totp_enabled = data.totp_enabled
-    settings.auth_webauthn_enabled = data.webauthn_enabled
-    settings.auth_oidc_enabled = data.oidc_enabled
-    settings.auth_api_tokens_enabled = data.api_tokens_enabled
-    settings.auth_magic_links_enabled = data.magic_links_enabled
-    return {"success": True}
 """BanusNas — Auth API: login, register, refresh, profile, sessions."""
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,18 +89,31 @@ async def totp_disable(user: User = Depends(get_current_user), session: AsyncSes
     session.add(user)
     await session.commit()
     return {"message": "TOTP disabled"}
-from core.permissions import permissions_for, user_role
-from models.database import get_session
-from models.schemas import NotificationRule, User, UserRole, UserSession
-from schemas.api_schemas import (
-    TokenRefresh,
-    TokenResponse,
-    UserLogin,
-    UserRegister,
-    UserResponse,
-)
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+class AuthSettingsUpdate(BaseModel):
+    totp_enabled: bool
+    webauthn_enabled: bool
+    oidc_enabled: bool
+    api_tokens_enabled: bool
+    magic_links_enabled: bool
+
+
+@router.put("/settings")
+async def update_auth_settings(
+    data: AuthSettingsUpdate = Body(...),
+    user: User = Depends(get_current_user),
+):
+    """Update global auth settings (admin only)."""
+    from core.config import settings
+    if not getattr(user, "is_admin", False) and user.role != UserRole.admin.value:
+        raise HTTPException(403, "Admin only")
+    settings.auth_totp_enabled = data.totp_enabled
+    settings.auth_webauthn_enabled = data.webauthn_enabled
+    settings.auth_oidc_enabled = data.oidc_enabled
+    settings.auth_api_tokens_enabled = data.api_tokens_enabled
+    settings.auth_magic_links_enabled = data.magic_links_enabled
+    return {"success": True}
 
 
 async def _create_session(session: AsyncSession, user: User, request: Request) -> UserSession:
