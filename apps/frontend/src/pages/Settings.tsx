@@ -64,7 +64,9 @@ interface AuthSettings {
         {mut.isSuccess && <div className="text-emerald-400 text-xs">Saved!</div>}
         {mut.isError && <div className="text-red-400 text-xs">Failed to save</div>}
       </div>
+
     );
+  }
 
       {/* Resource gauges grid */}
       <div className="grid grid-cols-3 gap-3">
@@ -141,6 +143,7 @@ interface AuthSettings {
         ) : null}
       </div>
     );
+}
 
 /* ═══════════════════════ Coral Edge TPU Status ═══════════════════════ */
 
