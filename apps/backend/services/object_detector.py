@@ -283,10 +283,11 @@ class ObjectDetector:
             # Reject person detections that are too small — real people in
             # CCTV occupy a meaningful portion of the frame.  A tiny box is
             # almost always a mis-classified object fragment (remote, phone,
-            # furniture edge).  Min area = 0.5% of frame.
+            # furniture edge).  Min area = 0.15% of frame (lowered from 0.5%
+            # to avoid filtering out small children and distant subjects).
             box_area = (x2 - x1) * (y2 - y1)
             frame_area = h * w
-            if class_name == "person" and box_area < frame_area * 0.005:
+            if class_name == "person" and box_area < frame_area * 0.0015:
                 continue
 
             # Generate instance mask from seg model
@@ -599,8 +600,8 @@ class ObjectDetector:
                 if cls == "person":
                     if conf < settings.detector_person_min_confidence:
                         continue
-                    # Min size filter
-                    if (x2 - x1) * (y2 - y1) < frame_area * 0.005:
+                    # Min size filter — 0.15% of frame (avoids filtering small children).
+                    if (x2 - x1) * (y2 - y1) < frame_area * 0.0015:
                         continue
                 elif cls in ("cat", "dog"):
                     if conf < settings.detector_animal_min_confidence:

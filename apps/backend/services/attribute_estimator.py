@@ -296,6 +296,61 @@ def estimate_person_attributes(
         except (AttributeError, TypeError, ValueError):
             pass
 
+    # ── Head-to-body ratio child heuristic ──
+    # Children have proportionally larger heads than adults:
+    #   - Toddlers (~2yr): head ≈ 1/4 of total height (ratio ≈ 0.25)
+    #   - Children (~6yr): head ≈ 1/6 of total height (ratio ≈ 0.17)
+    #   - Adults:          head ≈ 1/7.5 of total height (ratio ≈ 0.13)
+    # When a face is detected within a full-body crop, this ratio is a
+    # reliable cue even when InsightFace's age regressor is biased (it was
+    # trained mostly on adult faces and tends to over-estimate children's age).
+    head_body_ratio: Optional[float] = None
+    if face_data is not None and hasattr(face_data, "bbox"):
+        try:
+            fb = face_data.bbox  # crop-local coords
+            face_h_px = float(fb[3]) - float(fb[1])
+            if face_h_px > 5 and box_h > 40:
+                # Approximate head height ≈ 1.35 × face (face bbox excludes hair/chin)
+                head_h_est = face_h_px * 1.35
+                head_body_ratio = head_h_est / float(box_h)
+        except (TypeError, IndexError, ValueError):
+            head_body_ratio = None
+
+    if head_body_ratio is not None:
+        # Require posture to be a full standing/walking body — otherwise the
+        # ratio is meaningless (sitting / occluded subjects).
+        is_full_body = (box_h / max(box_w, 1)) > 1.8
+        if is_full_body:
+            if head_body_ratio >= 0.20:
+                # Strong child signal — override face-age if it disagreed.
+                attrs.age_group = "child"
+                if attrs.age is None:
+                    attrs.age = 8
+            elif head_body_ratio >= 0.165 and attrs.age_group in (None, "young_adult"):
+                # Borderline child / pre-teen — only override if face age was
+                # ambiguous (None) or low-end "young_adult".
+                attrs.age_group = "child"
+                if attrs.age is None:
+                    attrs.age = 12
+
+    # ── Fallback child heuristic when no face is available ──
+    # If no face was detected (common for small/distant subjects or kids
+    # facing away) but the bbox is clearly a full-body standing person AND
+    # is unusually short relative to the frame, flag as a likely child.
+    # This is intentionally conservative — only fires when the bbox is in
+    # the lower 60% of the frame (i.e., a near subject, not a distant one
+    # that just happens to be small in pixels).
+    if attrs.age_group is None and face_data is None:
+        is_full_body = (box_h / max(box_w, 1)) > 1.9
+        height_ratio = box_h / max(frame_h, 1)
+        bbox_bottom_ratio = y2 / max(frame_h, 1)
+        if (
+            is_full_body
+            and height_ratio < 0.35
+            and bbox_bottom_ratio > 0.55
+        ):
+            attrs.age_group = "child"
+
     # ── Build from aspect ratio and area ──
     aspect_ratio = box_w / max(box_h, 1)
     relative_area = (box_w * box_h) / max(frame_h * frame_w, 1)
