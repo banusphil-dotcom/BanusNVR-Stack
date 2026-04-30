@@ -425,54 +425,14 @@ async def list_events_grouped(
                 auto_group_latest[ev.camera_id] = (gk, ts)
             groups.setdefault(gk, []).append(ev)
 
-    # ── Phase 2: Cross-camera activity session merging ──
-    # Walk groups chronologically and merge any that share a named_object_id
-    # within _ACTIVITY_SESSION_WINDOW_S of each other.
-    merged_groups: OrderedDict[str, list[Event]] = OrderedDict()
-    # Track: named_object_id → (merged_group_key, latest_timestamp)
-    active_sessions: dict[int, tuple[str, float]] = {}
-
-    for gk,gevents in groups.items():
-        gevents.sort(key=lambda e: e.started_at)
-        group_ts = gevents[0].started_at.timestamp() if gevents[0].started_at else 0
-        group_end_ts = max(
-            (e.ended_at or e.started_at).timestamp()
-            for e in gevents if e.started_at
-        ) if gevents else group_ts
-
-        # Find named_object_ids in this group
-        named_ids = {e.named_object_id for e in gevents if e.named_object_id}
-
-        # Check if any named person has an active session we can merge into
-        merge_into = None
-        for noid in named_ids:
-            session_info = active_sessions.get(noid)
-            if session_info and (group_ts - session_info[1]) < _ACTIVITY_SESSION_WINDOW_S:
-                merge_into = session_info[0]
-                break
-
-        # Hard cap: don't merge if the existing session would exceed _MAX_SESSION_DURATION_S
-        if merge_into and merge_into in merged_groups:
-            existing = merged_groups[merge_into]
-            existing_start = min((e.started_at.timestamp() for e in existing if e.started_at), default=group_ts)
-            if (group_end_ts - existing_start) > _MAX_SESSION_DURATION_S:
-                merge_into = None  # session has run too long, force split
-
-        if merge_into and merge_into in merged_groups:
-            # Merge this group's events into the existing session
-            merged_groups[merge_into].extend(gevents)
-            # Update session timestamps for all named objects
-            for noid in named_ids:
-                active_sessions[noid] = (merge_into, group_end_ts)
-            # Also update any existing sessions that pointed here
-            for noid, (sgk, sts) in list(active_sessions.items()):
-                if sgk == merge_into:
-                    active_sessions[noid] = (merge_into, max(sts, group_end_ts))
-        else:
-            # New session
-            merged_groups[gk] = list(gevents)
-            for noid in named_ids:
-                active_sessions[noid] = (gk, group_end_ts)
+    # ── No cross-camera Phase 2 merging ──
+    # The previous "activity session" merge collapsed every event sharing a
+    # named_object_id across the page into one mega-group, producing a single
+    # 10h+ card on the UI. Worse, it walked groups in DESC order but computed
+    # windows as if ASC, so reassigning an unknown to a person dragged the
+    # event into whatever long-running session was at the top of the page.
+    # The frontend only needs the per-camera group_key buckets from Phase 1.
+    merged_groups: OrderedDict[str, list[Event]] = groups
 
     # Count total groups (approximate)
     count_query = select(func.count()).select_from(Event)
