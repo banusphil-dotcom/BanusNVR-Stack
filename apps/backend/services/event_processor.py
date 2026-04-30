@@ -1282,10 +1282,14 @@ class EventProcessor:
 
         bbox_dict = det.to_dict()["bbox"]
 
-        # ── Try to consolidate with a recent event ──
-        existing_event_id = self._try_consolidate(
-            camera_id, det.class_name, named_object_id, bbox_dict
-        )
+        # ── 1 detection = 1 event ──
+        # Cross-detection consolidation collapsed every detection of the same
+        # entity into a single row. The frontend already groups discrete events
+        # by `group_key` for display, so we keep events 1:1 with detections
+        # here. (`_try_consolidate` and `_record_event` are intentionally left
+        # in place but no longer wired in; they may be re-enabled per-camera
+        # via a future setting.)
+        existing_event_id = None
 
         if existing_event_id:
             # Extend the existing event — update ended_at, bump snapshot

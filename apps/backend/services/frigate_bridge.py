@@ -295,18 +295,12 @@ class FrigateBridge:
         start_ts = datetime.fromtimestamp(data.get("start_time", time.time()), tz=timezone.utc)
         cam_friendly = _camera_id_to_friendly.get(camera_id, camera_name)
 
-        # ── Event consolidation: merge pet detections on same camera (not persons
-        # — person identity unknown at this point, consolidate after recognition) ──
-        if label in ("cat", "dog", "bird"):
-            consolidated = await self._try_consolidate(
-                camera_id, label, bbox, score, frigate_id, start_ts, data,
-            )
-            if consolidated:
-                self._event_map[frigate_id] = consolidated
-                asyncio.create_task(
-                    self._run_recognition(frigate_id, camera_id, label, score, data)
-                )
-                return
+        # ── 1 Frigate track = 1 DB event ──
+        # Previously we attempted to consolidate pet detections into a recent
+        # event on the same camera. That collapsed every visit/movement into a
+        # single row and produced "1 grouped event for the whole day" on the UI.
+        # The frontend already groups discrete events by `group_key` for
+        # display, so we keep events 1:1 with Frigate tracks here.
 
         # Create new event in Postgres
         group_key = self._get_or_create_group_key(camera_id, start_ts.timestamp())
@@ -347,14 +341,6 @@ class FrigateBridge:
 
         logger.info("New event #%d: %s on %s (score=%.2f) [%s]",
                     event_db.id, label, cam_friendly, score, frigate_id[:12])
-
-        # Register in consolidation cache as unknown (named_object_id=0)
-        cache_key = (camera_id, label, 0)
-        self._recent_events[cache_key] = {
-            "event_id": event_db.id,
-            "last_ts": time.time(),
-            "bbox": bbox,
-        }
 
         # Publish to WebSocket clients
         event_bus.publish({
@@ -825,58 +811,15 @@ class FrigateBridge:
             "name": named_object_name,
         }
 
-        # ── Post-recognition person consolidation (CROSS-CAMERA) ──
-        # Now we know WHO this is — merge into existing event for same person
-        # regardless of camera. Philip in living room + kitchen = 1 event.
-        if label == "person":
-            named_key = ("person", named_object_id)  # cross-camera key
-            existing = self._recent_events.get(named_key)
-            if (existing and existing["event_id"] != event_id
-                    and time.time() - existing["last_ts"] <= CONSOLIDATION_IDLE_S):
-                merge_target = existing["event_id"]
-                # Hard cap: don't merge into an event that's already been
-                # running longer than MAX_EVENT_DURATION_S. Without this,
-                # a recognized person who is repeatedly detected every
-                # <3 min produces a single event spanning many hours
-                # ("Philip has been here for 24 hours non-stop").
-                target_too_old = False
-                async with async_session() as session:
-                    target_ev = await session.get(Event, merge_target)
-                    if target_ev is None:
-                        target_too_old = True  # event vanished — drop cache
-                    elif target_ev.started_at:
-                        ev_age = time.time() - target_ev.started_at.timestamp()
-                        if ev_age > MAX_EVENT_DURATION_S:
-                            target_too_old = True
-                if target_too_old:
-                    # Forget stale cache so the new event stands alone and
-                    # subsequent detections start fresh.
-                    del self._recent_events[named_key]
-                else:
-                    merged = await self._merge_into_existing(
-                        source_id=event_id, target_id=merge_target,
-                        camera_id=camera_id, label=label, frigate_id=frigate_id,
-                    )
-                    if merged:
-                        self._event_map[frigate_id] = merge_target
-                        existing["last_ts"] = time.time()
-                        existing["camera_id"] = camera_id  # track latest camera
-                        # Remove unknown cache entry for source event
-                        unknown_key = (camera_id, label, 0)
-                        unk = self._recent_events.get(unknown_key)
-                        if unk and unk["event_id"] == event_id:
-                            del self._recent_events[unknown_key]
-                        cam_f = _camera_id_to_friendly.get(camera_id, f"camera_{camera_id}")
-                        consol = (existing.get("consolidated") or 1) + 1
-                        logger.info("Person merge: #%d → #%d (%s on %s, ×%d)",
-                                    event_id, merge_target, named_object_name, cam_f, consol)
-                        await self._set_frigate_sub_label(frigate_id, named_object_name)
-                        return
-
-        # Update consolidation cache: promote unknown → named so future detections merge
-        self._update_consolidation_cache(
-            camera_id, label, named_object_id, event_id, self._extract_bbox(data),
-        )
+        # ── 1 Frigate track = 1 DB event ──
+        # Cross-camera person merging used to fold every subsequent detection
+        # of a recognised person into the original event row, producing a
+        # single "Philip" card that spanned hours/days. The frontend already
+        # clusters discrete events by `group_key` for display, so we keep
+        # events 1:1 with Frigate tracks here. The push-frigate sub_label
+        # update below still applies so Frigate's UI shows the identity.
+        if label == "person" and named_object_name:
+            await self._set_frigate_sub_label(frigate_id, named_object_name)
 
         # Record successful recognition for temporal propagation (direct matches only)
         if not propagated:
