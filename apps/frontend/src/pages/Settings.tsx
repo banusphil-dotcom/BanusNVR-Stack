@@ -1615,6 +1615,7 @@ function StorageSettings() {
 
 
 import TOTPSetupModal from "../components/TOTPSetupModal";
+import PasskeyManager from "../components/PasskeyManager";
 
 function AccountSettings() {
   const { user, logout, refreshProfile } = useAuth();
@@ -1720,9 +1721,9 @@ function AccountSettings() {
           </div>
           <div className="border-t border-slate-800 pt-3 mt-3">
             <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Shield size={14} className="text-green-400" /> WebAuthn (Passkeys)
+              <Shield size={14} className="text-green-400" /> Passkeys / Biometrics (WebAuthn)
             </h4>
-            <div className="text-xs text-slate-400">WebAuthn setup coming soon.</div>
+            <PasskeyManager />
           </div>
           <div className="border-t border-slate-800 pt-3 mt-3">
             <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">

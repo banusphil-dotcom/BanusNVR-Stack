@@ -1,29 +1,29 @@
-"""BanusNas — Auth API: login, register, refresh, profile, sessions."""
+"""BanusNas — Auth API: login, register, refresh, profile, sessions, TOTP."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-
 
 from core.audit import audit, _client_ip
 from core.auth import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    generate_totp_secret,
     get_current_user,
+    get_totp_uri,
     hash_password,
     is_locked_out,
     register_failed_login,
     register_successful_login,
     verify_password,
-    generate_totp_secret,
-    get_totp_uri,
     verify_totp,
 )
+from core.config import settings
 from core.permissions import permissions_for, user_role
 from models.database import get_session
 from models.schemas import NotificationRule, User, UserRole, UserSession
@@ -36,7 +36,57 @@ from schemas.api_schemas import (
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-# ----- TOTP 2FA endpoints -------------------------------------------------
+
+
+# ───────────────────────── auth-method settings ─────────────────────────
+
+
+class AuthSettingsResponse(BaseModel):
+    totp_enabled: bool
+    webauthn_enabled: bool
+    oidc_enabled: bool
+    api_tokens_enabled: bool
+    magic_links_enabled: bool
+
+
+@router.get("/settings", response_model=AuthSettingsResponse)
+async def get_auth_settings():
+    """Public — frontend uses this to decide which login affordances to show."""
+    return AuthSettingsResponse(
+        totp_enabled=settings.auth_totp_enabled,
+        webauthn_enabled=settings.auth_webauthn_enabled,
+        oidc_enabled=settings.auth_oidc_enabled,
+        api_tokens_enabled=settings.auth_api_tokens_enabled,
+        magic_links_enabled=settings.auth_magic_links_enabled,
+    )
+
+
+class AuthSettingsUpdate(BaseModel):
+    totp_enabled: bool
+    webauthn_enabled: bool
+    oidc_enabled: bool
+    api_tokens_enabled: bool
+    magic_links_enabled: bool
+
+
+@router.put("/settings", response_model=AuthSettingsResponse)
+async def update_auth_settings(
+    data: AuthSettingsUpdate = Body(...),
+    user: User = Depends(get_current_user),
+):
+    """Admin-only — flip method toggles at runtime (process memory)."""
+    if not getattr(user, "is_admin", False) and user.role != UserRole.admin.value:
+        raise HTTPException(403, "Admin only")
+    settings.auth_totp_enabled = data.totp_enabled
+    settings.auth_webauthn_enabled = data.webauthn_enabled
+    settings.auth_oidc_enabled = data.oidc_enabled
+    settings.auth_api_tokens_enabled = data.api_tokens_enabled
+    settings.auth_magic_links_enabled = data.magic_links_enabled
+    return AuthSettingsResponse(**data.model_dump())
+
+
+# ───────────────────────── TOTP (2FA) ─────────────────────────
+
 
 class TOTPSetupResponse(BaseModel):
     secret: str
@@ -44,8 +94,10 @@ class TOTPSetupResponse(BaseModel):
 
 
 @router.post("/totp/setup", response_model=TOTPSetupResponse)
-async def totp_setup(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
-    """Begin TOTP setup: returns secret and provisioning URI."""
+async def totp_setup(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
     if not settings.auth_totp_enabled:
         raise HTTPException(403, "TOTP is disabled by administrator")
     if user.totp_enabled:
@@ -79,11 +131,11 @@ async def totp_verify(
     return {"message": "TOTP enabled"}
 
 
-
 @router.post("/totp/disable")
-async def totp_disable(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
-    if not settings.auth_totp_enabled:
-        raise HTTPException(403, "TOTP is disabled by administrator")
+async def totp_disable(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
     user.totp_enabled = False
     user.totp_secret = None
     session.add(user)
@@ -91,29 +143,7 @@ async def totp_disable(user: User = Depends(get_current_user), session: AsyncSes
     return {"message": "TOTP disabled"}
 
 
-class AuthSettingsUpdate(BaseModel):
-    totp_enabled: bool
-    webauthn_enabled: bool
-    oidc_enabled: bool
-    api_tokens_enabled: bool
-    magic_links_enabled: bool
-
-
-@router.put("/settings")
-async def update_auth_settings(
-    data: AuthSettingsUpdate = Body(...),
-    user: User = Depends(get_current_user),
-):
-    """Update global auth settings (admin only)."""
-    from core.config import settings
-    if not getattr(user, "is_admin", False) and user.role != UserRole.admin.value:
-        raise HTTPException(403, "Admin only")
-    settings.auth_totp_enabled = data.totp_enabled
-    settings.auth_webauthn_enabled = data.webauthn_enabled
-    settings.auth_oidc_enabled = data.oidc_enabled
-    settings.auth_api_tokens_enabled = data.api_tokens_enabled
-    settings.auth_magic_links_enabled = data.magic_links_enabled
-    return {"success": True}
+# ───────────────────────── register / login / refresh ─────────────────────────
 
 
 async def _create_session(session: AsyncSession, user: User, request: Request) -> UserSession:
@@ -123,7 +153,7 @@ async def _create_session(session: AsyncSession, user: User, request: Request) -
         ip_address=_client_ip(request),
     )
     session.add(sess)
-    await session.flush()  # populate sess.id
+    await session.flush()
     return sess
 
 
@@ -133,11 +163,7 @@ async def register(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    """First-user-becomes-admin bootstrap.
-
-    Once any user exists, this endpoint refuses public registration. Admins
-    must use POST /api/users to create additional accounts.
-    """
+    """First-user-becomes-admin bootstrap. Disabled once any user exists."""
     user_count = await session.scalar(select(func.count()).select_from(User))
     if user_count and user_count > 0:
         raise HTTPException(
@@ -194,15 +220,17 @@ class LoginResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     must_change_password: bool = False
-
-
-
-# --- Login with TOTP support ---
-class LoginStep(BaseModel):
-    step: str
-    session_id: int | None = None
-    user_id: int | None = None
+    # When TOTP is required, the password step returns step="totp" and a
+    # short-lived temp_token to exchange via /login/totp.
+    step: str | None = None
     temp_token: str | None = None
+
+
+def _issue_totp_temp_token(user_id: int) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    payload = {"sub": str(user_id), "exp": expire, "type": "totp"}
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
@@ -231,7 +259,7 @@ async def login(
     if is_locked_out(user):
         await audit(session, action="auth.login_blocked", actor=user, detail={"reason": "locked"}, request=request, commit=True)
         raise HTTPException(
-            status_code=423,  # Locked
+            status_code=423,
             detail=f"Account locked. Try again at {user.locked_until.isoformat()}",
         )
 
@@ -241,33 +269,15 @@ async def login(
         await session.commit()
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # If TOTP is enabled, require a second step
-    if user.totp_enabled:
-        # Issue a temp token (JWT with type=totp)
-        from core.config import settings
-        from fastapi.responses import JSONResponse
-        @router.get("/settings")
-        async def get_auth_settings():
-            """Return global authentication method toggles."""
-            return JSONResponse({
-                "totp_enabled": settings.auth_totp_enabled,
-                "webauthn_enabled": settings.auth_webauthn_enabled,
-                "oidc_enabled": settings.auth_oidc_enabled,
-                "api_tokens_enabled": settings.auth_api_tokens_enabled,
-                "magic_links_enabled": settings.auth_magic_links_enabled,
-            })
-        from jose import jwt
-        from jose.exceptions import JWTError
-        from datetime import timedelta, datetime, timezone
-        expire = datetime.now(timezone.utc) + timedelta(minutes=5)
-        payload = {"sub": str(user.id), "exp": expire, "type": "totp"}
-        temp_token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    # 2FA gate
+    if user.totp_enabled and settings.auth_totp_enabled:
+        await session.commit()  # persist any failed-login resets above
         return LoginResponse(
             access_token="",
             refresh_token="",
+            step="totp",
+            temp_token=_issue_totp_temp_token(user.id),
             must_change_password=user.must_change_password,
-            token_type="totp",
-            temp_token=temp_token,
         )
 
     register_successful_login(user)
@@ -282,7 +292,6 @@ async def login(
     )
 
 
-# --- TOTP login step ---
 class TOTPLoginRequest(BaseModel):
     temp_token: str
     token: str
@@ -294,25 +303,20 @@ async def login_totp(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    if not settings.auth_totp_enabled:
-        raise HTTPException(403, "TOTP is disabled by administrator")
-    # Validate temp token
-    from core.config import settings
-    from jose import jwt
-    from jose.exceptions import JWTError
-    from datetime import datetime, timezone
     try:
         payload = jwt.decode(data.temp_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        if payload.get("type") != "totp":
-            raise HTTPException(401, "Invalid token type")
-        user_id = int(payload["sub"])
     except JWTError:
         raise HTTPException(401, "Invalid or expired token")
+    if payload.get("type") != "totp":
+        raise HTTPException(401, "Invalid token type")
 
+    user_id = int(payload["sub"])
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.totp_enabled or not user.totp_secret:
         raise HTTPException(401, "TOTP not enabled")
+    if user.disabled:
+        raise HTTPException(403, "Account disabled")
     if not verify_totp(data.token, user.totp_secret):
         raise HTTPException(401, "Invalid TOTP code")
 
@@ -361,7 +365,6 @@ async def logout(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Revoke the session this token belongs to."""
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         try:
@@ -379,9 +382,11 @@ async def logout(
     return {"message": "Logged out"}
 
 
+# ───────────────────────── profile / sessions ─────────────────────────
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_profile(user: User = Depends(get_current_user)):
-    # Ensure totp_enabled is present in response
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -440,10 +445,8 @@ async def change_password(
 ):
     if not verify_password(data.old_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect current password")
-
     if len(data.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-
     if verify_password(data.new_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="New password must differ from the current one")
 
@@ -453,9 +456,6 @@ async def change_password(
     await audit(session, action="user.password_changed", actor=user, target_type="user", target_id=user.id, request=request)
     await session.commit()
     return {"message": "Password updated"}
-
-
-# ----- Session management (own sessions) ----------------------------------
 
 
 @router.get("/sessions")

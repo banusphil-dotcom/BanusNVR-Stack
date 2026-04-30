@@ -26,6 +26,12 @@ async def get_session():
 
 async def init_db():
     from models.schemas import Base
+    # Import side-effect: register tables for create_all
+    from models import webauthn  # noqa: F401
+    try:
+        from models import api_tokens  # noqa: F401
+    except Exception:
+        pass
     from sqlalchemy import text
 
     async with engine.begin() as conn:

@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     auth_oidc_enabled: bool = Field(default=False, description="Enable OIDC (Single Sign-On)")
     auth_api_tokens_enabled: bool = Field(default=True, description="Enable API tokens")
     auth_magic_links_enabled: bool = Field(default=False, description="Enable magic link login")
+    # WebAuthn / passkeys (biometrics). rp_id MUST match the public hostname
+    # the user uses to log in (e.g. "banusnas.local" or "nvr.example.com").
+    # Empty = derive from the request Origin at /register/begin time.
+    webauthn_rp_id: str = Field(default="", description="WebAuthn relying-party id (hostname only)")
+    webauthn_rp_name: str = Field(default="BanusNVR", description="WebAuthn relying-party display name")
     # Database
     database_url: str = Field(default="postgresql+asyncpg://banusnas:changeme@db:5432/banusnas")
 

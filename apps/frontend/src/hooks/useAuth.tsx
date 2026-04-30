@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, setToken } from "../api";
+import { loginWithPasskey } from "../webauthn";
 
 export type UserRole = "admin" | "operator" | "viewer" | "guest";
 
@@ -26,7 +27,13 @@ interface LoginResponse {
   access_token: string;
   refresh_token: string;
   must_change_password?: boolean;
+  step?: "totp" | null;
+  temp_token?: string | null;
 }
+
+export type LoginResult =
+  | { kind: "ok" }
+  | { kind: "totp"; tempToken: string };
 
 interface AuthCtx {
   user: User | null;
@@ -35,7 +42,9 @@ interface AuthCtx {
   mustChangePassword: boolean;
   hasPermission: (perm: string) => boolean;
   hasRole: (...roles: UserRole[]) => boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<LoginResult>;
+  loginTotp: (tempToken: string, code: string) => Promise<void>;
+  loginPasskey: (username?: string) => Promise<void>;
   register: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -91,12 +100,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = async (username: string, password: string) => {
-    const data = await api.post<LoginResponse>("/api/auth/login", { username, password });
+  const finishLogin = async (data: LoginResponse) => {
     setToken(data.access_token);
     localStorage.setItem("banusnas_refresh", data.refresh_token);
     await loadProfile();
     if (data.must_change_password) setMustChangePassword(true);
+  };
+
+  const login = async (username: string, password: string): Promise<LoginResult> => {
+    const data = await api.post<LoginResponse>("/api/auth/login", { username, password });
+    if (data.step === "totp" && data.temp_token) {
+      return { kind: "totp", tempToken: data.temp_token };
+    }
+    await finishLogin(data);
+    return { kind: "ok" };
+  };
+
+  const loginTotp = async (tempToken: string, code: string) => {
+    const data = await api.post<LoginResponse>("/api/auth/login/totp", {
+      temp_token: tempToken,
+      token: code,
+    });
+    await finishLogin(data);
+  };
+
+  const loginPasskey = async (username?: string) => {
+    const data = await loginWithPasskey(username);
+    await finishLogin(data as LoginResponse);
   };
 
   const register = async (username: string, password: string) => {
@@ -126,6 +156,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         hasPermission,
         hasRole,
         login,
+        loginTotp,
+        loginPasskey,
         register,
         logout,
         refreshProfile: loadProfile,
